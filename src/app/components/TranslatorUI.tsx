@@ -367,7 +367,7 @@ export default function TranslatorUI() {
       )}
 
       <footer style={{ marginTop: '48px', textAlign: 'center', fontSize: '12px', color: '#64748b' }}>
-        <p>Powered by Google Gemini 2.0 Flash • Built for Estonian scientific community</p>
+        <p>Powered by Google Gemini 2.5 Pro • Built for Estonian scientific community</p>
       </footer>
     </div>
   );
