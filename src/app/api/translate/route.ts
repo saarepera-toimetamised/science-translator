@@ -361,6 +361,49 @@ async function translateWithGemini(
   
 Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
   
+🔗🔗🔗 HYPERLINKS - MOST CRITICAL RULE - READ THIS FIRST 🔗🔗🔗  
+  
+THIS IS THE #1 MOST IMPORTANT RULE - FAILURE TO FOLLOW THIS RULE MAKES THE TRANSLATION UNUSABLE:  
+  
+The source articles contain hyperlinks in markdown format like this: [anchor text](https://url.com)  
+You MUST preserve EVERY SINGLE hyperlink in your Estonian translation.  
+  
+MANDATORY HYPERLINK FORMAT:  
+✅ CORRECT: [eestikeelne tekst](https://originaal-url.com)  
+❌ WRONG: eestikeelne tekst  
+❌ WRONG: https://originaal-url.com  
+❌ WRONG: eestikeelne tekst https://originaal-url.com  
+  
+CONCRETE EXAMPLES - STUDY THESE CAREFULLY:  
+  
+Example 1:  
+English: "according to [researchers at MIT](https://mit.edu/study)"  
+Estonian: "nagu [MIT-i teadlased](https://mit.edu/study) väitsid"  
+  
+Example 2:  
+English: "The study shows [significant improvements](https://nature.com/article)"  
+Estonian: "Uuring näitab [märkimisväärseid täiustusi](https://nature.com/article)"  
+  
+Example 3:  
+English: "[OpenAI's latest model](https://openai.com/gpt4) performs better"  
+Estonian: "[OpenAI uusim mudel](https://openai.com/gpt4) töötab paremini"  
+  
+Example 4:  
+English: "As explained in [this article](https://example.com/long-url-with-parameters?id=123&source=test)"  
+Estonian: "Nagu [selles artiklis](https://example.com/long-url-with-parameters?id=123&source=test) selgitatakse"  
+  
+HYPERLINK RULES - NO EXCEPTIONS:  
+1. Translate the anchor text (the part in [square brackets]) to Estonian  
+2. Keep the URL (the part in parentheses) EXACTLY as it appears - DO NOT modify, shorten, or remove it  
+3. The markdown syntax [text](url) must be preserved exactly  
+4. NEVER output a bare URL like https://example.com - it must ALWAYS be inside [text](url) format  
+5. If the source has 20 links, your translation MUST have 20 links  
+6. Each URL must stay on ONE line - never split URLs across multiple lines  
+  
+THIS RULE OVERRIDES ALL OTHER RULES. If you must choose between perfect grammar and preserving links, PRESERVE THE LINKS.  
+  
+🔗🔗🔗 END OF HYPERLINK RULES 🔗🔗🔗  
+  
 CRITICAL RULES - MUST FOLLOW STRICTLY:  
   
 Perspective and Quotations - CRITICAL:  
@@ -375,16 +418,6 @@ Perspective and Quotations - CRITICAL:
 - Do not use bold text  
 - Do not begin paragraphs with dates, years or other numbers  
 - EVERY statement must be in third person narrative form, no exceptions  
-  
-Hyperlinks - PUBLICATION REQUIREMENTS:  
-- Preserve EVERY hyperlink on the exact same word/phrase as in the original  
-- ALWAYS format hyperlinks as markdown: [Estonian translated text](URL)  
-- NEVER leave bare URLs in the text - they must be embedded in Estonian words  
-- Example: "according to [researchers](https://example.com)" NOT "according to https://example.com"  
-- Translate the anchor text to Estonian, keep URL unchanged  
-- CRITICAL: Keep each URL complete on ONE line - NEVER split a URL across multiple lines  
-- CRITICAL: If a URL is very long, keep it intact - do not break it with line breaks or dashes  
-- The translation must be publication-ready with all links properly embedded  
   
 Accuracy and Completeness:  
 - Translate the entire text  
@@ -476,16 +509,25 @@ CRITICAL:
         role: 'user',  
         parts: [{  
           text: `${systemPrompt}${additionalInstructions}${guidancePrompt}\n\nPlease translate the following ${articles.length} scientific article${articles.length > 1 ? 's' : ''} from English to Estonian:${articlesText}\n\nCRITICAL REMINDERS:  
-1. DO NOT include the title in your translation - translate ONLY the article body/content  
-2. If an Estonian title is provided, it's for reference only - do NOT translate the English title  
-3. STRICT THIRD PERSON PERSPECTIVE - Convert ALL speech/citations to indirect speech. NO quotation marks for speech  
-4. Example: Instead of '"This is amazing," said Dr. Smith' write 'Dr. Smith ütles, et see on hämmastav'  
-5. For names/technical terms with quotes in original: ALWAYS use « » (NEVER " " or ' ')  
-6. Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
-7. 🚨 STOP IMMEDIATELY when you see 3+ consecutive short headline-like sentences - these are RELATED ARTICLES, not article content  
-8. Examples of where to STOP: "Kirigami-stiilis langevarjukonstruktsioon...", "Scientists discover new...", "Researchers develop..."  
-9. DO NOT translate: copyright notices, editorial metadata, "More information" sections, related articles lists  
-10. If you're unsure whether something is a related article, STOP EARLY rather than include it  
+1. 🔗🔗🔗 HYPERLINKS ARE MANDATORY - Preserve EVERY [text](url) link from the source! This is the #1 priority!  
+2. DO NOT include the title in your translation - translate ONLY the article body/content  
+3. If an Estonian title is provided, it's for reference only - do NOT translate the English title  
+4. 🔗 HYPERLINK FORMAT: [eestikeelne tekst](https://original-url.com) - translate text, keep URL unchanged  
+5. STRICT THIRD PERSON PERSPECTIVE - Convert ALL speech/citations to indirect speech. NO quotation marks for speech  
+6. Example: Instead of '"This is amazing," said Dr. Smith' write 'Dr. Smith ütles, et see on hämmastav'  
+7. For names/technical terms with quotes in original: ALWAYS use « » (NEVER " " or ' ')  
+8. Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
+9. 🔗 COUNT THE LINKS: If source has 15 hyperlinks, your translation MUST have 15 hyperlinks in [text](url) format  
+10. 🚨 STOP IMMEDIATELY when you see 3+ consecutive short headline-like sentences - these are RELATED ARTICLES, not article content  
+11. Examples of where to STOP: "Kirigami-stiilis langevarjukonstruktsioon...", "Scientists discover new...", "Researchers develop..."  
+12. DO NOT translate: copyright notices, editorial metadata, "More information" sections, related articles lists  
+13. If you're unsure whether something is a related article, STOP EARLY rather than include it  
+  
+🔗 FINAL HYPERLINK CHECK BEFORE SUBMITTING:  
+- Did you preserve EVERY single [text](url) link from the source?  
+- Are all URLs wrapped in markdown format [text](url)?  
+- Did you translate the anchor text but keep URLs unchanged?  
+If you answer NO to any of these, DO NOT submit - fix the links first!  
   
 Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`  
         }]  
@@ -496,7 +538,7 @@ Provide complete, professional Estonian translations for all articles (body text
   }  
   
   const response = await ai.models.generateContent({  
-    model: 'gemini-2.0-flash-exp',  
+    model: 'gemini-2.5-pro',  
     contents,  
   });  
   
@@ -511,6 +553,22 @@ Provide complete, professional Estonian translations for all articles (body text
     const translation = responseText.split('TRANSLATION_COMPLETE')[1].trim();  
     console.log(`[Gemini] Translation length: ${translation.length} characters`);  
     console.log(`[Gemini] Number of --- separators: ${(translation.match(/---/g) || []).length}`);  
+      
+    // Count hyperlinks in source and translation  
+    const sourceLinksCount = articles.reduce((count, article) => {  
+      return count + (article.content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;  
+    }, 0);  
+    const translationLinksCount = (translation.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;  
+      
+    console.log(`[Gemini] 🔗 Hyperlinks in source: ${sourceLinksCount}`);  
+    console.log(`[Gemini] 🔗 Hyperlinks in translation: ${translationLinksCount}`);  
+      
+    if (translationLinksCount < sourceLinksCount) {  
+      console.warn(`[Gemini] ⚠️ WARNING: Translation is missing ${sourceLinksCount - translationLinksCount} hyperlinks!`);  
+    } else if (translationLinksCount === sourceLinksCount) {  
+      console.log(`[Gemini] ✅ All hyperlinks preserved correctly!`);  
+    }  
+      
     return { complete: true, translation };  
   }  
   
