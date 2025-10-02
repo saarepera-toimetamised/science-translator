@@ -11,6 +11,64 @@ const activeSessions = new Map<string, {
   customPrompt?: string;  
 }>();  
   
+/**  
+ * Removes "related articles" lists that appear at the end of scraped content.  
+ * These lists typically consist of 5-30+ short sentences (article headlines) grouped together.  
+ */  
+function removeRelatedArticlesList(content: string): string {  
+  const paragraphs = content.split('\n\n').filter(p => p.trim().length > 0);  
+    
+  if (paragraphs.length < 3) {  
+    return content; // Too short to have related articles  
+  }  
+    
+  // Find the cutoff point where related articles likely start  
+  // Indicators: sudden appearance of many short paragraphs (50-150 chars each)  
+  let cutoffIndex = paragraphs.length;  
+  let consecutiveShortCount = 0;  
+    
+  for (let i = paragraphs.length - 1; i >= 0; i--) {  
+    const para = paragraphs[i].trim();  
+    const paraLength = para.length;  
+      
+    // Check if this looks like an article headline:  
+    // - Short (30-200 characters)  
+    // - No periods at the end OR only one period  
+    // - Doesn't start with common article text patterns  
+    const periodCount = (para.match(/\./g) || []).length;  
+    const looksLikeHeadline = (  
+      paraLength >= 30 &&   
+      paraLength <= 200 &&   
+      periodCount <= 1 &&  
+      !para.match(/^(the|a|an|in|on|at|this|these|scientists|researchers|according)/i)  
+    );  
+      
+    if (looksLikeHeadline) {  
+      consecutiveShortCount++;  
+        
+      // If we find 5+ consecutive headline-like paragraphs, this is likely the start of related articles  
+      if (consecutiveShortCount >= 5) {  
+        cutoffIndex = i;  
+      }  
+    } else if (paraLength > 300) {  
+      // Hit a substantial paragraph - stop looking  
+      consecutiveShortCount = 0;  
+      break;  
+    } else {  
+      consecutiveShortCount = 0;  
+    }  
+  }  
+    
+  // If we found a cutoff point, trim the content there  
+  if (cutoffIndex < paragraphs.length - 4) {  
+    const cleanedParagraphs = paragraphs.slice(0, cutoffIndex);  
+    console.log(`[Related Articles Filter] Removed ${paragraphs.length - cutoffIndex} suspected related article titles`);  
+    return cleanedParagraphs.join('\n\n');  
+  }  
+    
+  return content;  
+}  
+  
 async function scrapeArticle(url: string, estonianTitle?: string) {  
   try {  
     console.log(`[Scraper] Fetching URL: ${url}`);  
@@ -41,9 +99,10 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       title = $('title').text().trim();  
     }  
   
+    // STEP 1: Find content container BEFORE cleanup  
     const contentSelectors = [  
-      '.article-main',  
-      '.entry-content',  
+      '.article-main',   // phys.org, techxplore.com  
+      '.entry-content',  // WordPress standard (scitechdaily, etc.)  
       'article .entry-content',  
       '.post-content',  
       '.article-content',  
@@ -71,6 +130,7 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
           
         console.log(`[Scraper] Trying selector: ${selector}, found: ${element.length}, text length: ${text.length}, paragraphs: ${paragraphCount}`);  
           
+        // Lower threshold and check for paragraph tags  
         if (text.length > 150 || paragraphCount >= 3) {  
           contentElement = element;  
           selectedSelector = selector;  
@@ -88,6 +148,7 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       
     console.log(`[Scraper] Processing content from: ${selectedSelector}`);  
       
+    // STEP 2: Clean unwanted elements from the selected content container only  
     contentElement.find(`  
       script, style, nav, header, footer, aside, iframe,  
       .ad, .advertisement, .promo, .promotion,  
@@ -106,63 +167,87 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
     `.replace(/\s+/g, ' ').trim()).remove();  
   
     const noisePatterns = [  
+      // Dates and metadata  
       /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i,  
       /^\d{1,2}\/\d{1,2}\/\d{2,4}/,  
       /^\d{4}-\d{2}-\d{2}/,  
       /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i,  
+        
+      // Editorial metadata  
       /^(edited by|reviewed by|written by|fact.?checked by)/i,  
       /science x edit(or|orial) process|editorial process|editorial policies/i,  
       /the (article|story|content) has been reviewed/i,  
       /editors have highlighted the following/i,  
+        
+      // Copyright notices  
       /copyright|all rights reserved|©/i,  
       /this document is (subject to )?copyright/i,  
       /no part may be reproduced/i,  
       /without written permission/i,  
       /provided for (informational|information) purposes/i,  
       /fair (dealing|use)/i,  
+        
+      // "Provided by" / "More information"  
       /^(provided by|more information|further information|additional information)/i,  
       /^(citation|reference|doi):/i,  
+        
+      // Newsletter and subscription prompts  
       /subscribe|newsletter|sign up for|join (our|the)/i,  
       /(don't|don't|never) miss/i,  
       /follow us (on|at|in)/i,  
       /like us on/i,  
       /get (the latest|updates|our)/i,  
       /stay (updated|connected|informed)/i,  
+        
+      // Social media and sharing  
       /share (this|the) (article|story|post)/i,  
       /(facebook|twitter|instagram|linkedin|youtube|google|discover|news)\s*(,|\s|and)/i,  
       /follow.*?(facebook|twitter|instagram|linkedin|youtube)/i,  
+        
+      // Call to action  
       /click here|learn more|find out|discover more/i,  
-      /related (articles|stories|posts|content)/i,  
-      /you (may|might) (also )?(like|enjoy)/i,  
-      /recommended for you/i,  
-      /explore more|read more about/i,  
+      /related (articles|stories|posts|content|news|reading)/i,  
+      /you (may|might) (also )?(like|enjoy|want|be interested)/i,  
+      /recommended for you|recommended stories/i,  
+      /explore more|read more about|see also|see more/i,  
+      /trending|popular (articles|stories|posts)/i,  
+      /latest (articles|stories|posts|news)/i,  
+        
+      // Comments and engagement  
       /leave a comment|post a comment|comments|no comments/i,  
     ];  
   
     let markdownContent = '';  
     let processedElements = 0;  
-    let skippedElements = 0;  contentElement.find('p, h2, h3, h4, h5, h6, div.paragraph, div[class*="content"], div[class*="text"]').each((_, elem) => {  
+    let skippedElements = 0;  
+      
+    // Also try to find div elements that might contain article paragraphs  
+    contentElement.find('p, h2, h3, h4, h5, h6, div.paragraph, div[class*="content"], div[class*="text"]').each((_, elem) => {  
       processedElements++;  
       const $elem = $(elem);  
         
+      // Skip image captions, credits, and elements with only images  
       if ($elem.find('img').length > 0 || $elem.hasClass('caption') || $elem.hasClass('credit') || $elem.hasClass('wp-caption-text')) {  
         skippedElements++;  
         return;  
       }  
         
+      // Skip social sharing buttons and navigation  
       if ($elem.closest('.share, .social, nav, .navigation, .menu, .sidebar, .footer, .header').length > 0) {  
         skippedElements++;  
         return;  
       }  
         
+      // For div elements, only process if they contain meaningful text (not just nested tags)  
       if ($elem.is('div')) {  
         const directText = $elem.clone().children().remove().end().text().trim();  
         if (directText.length < 20) {  
           skippedElements++;  
-          return;  
+          return; // Skip divs that don't have direct text content  
         }  
       }  
   
+      // Extract all links first and replace them with markdown placeholders  
       const links: Array<{text: string; url: string; placeholder: string}> = [];  
       $elem.find('a').each((idx, link) => {  
         const $link = $(link);  
@@ -171,14 +256,16 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
           
         if (linkText && href) {  
           try {  
+            // Convert relative URLs to absolute  
             if (href.startsWith('/')) {  
               href = `${baseUrl.protocol}//${baseUrl.host}${href}`;  
             } else if (href.startsWith('#') || href.startsWith('javascript:')) {  
-              return;  
+              return; // Skip anchor and javascript links  
             } else if (!href.startsWith('http')) {  
               href = new URL(href, url).href;  
             }  
               
+            // Clean tracking parameters  
             const cleanUrl = new URL(href);  
             const paramsToRemove = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'source', 'cc', 'ust', 'usg', 'fbclid', 'gclid', 'ref'];  
               
@@ -194,14 +281,18 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
             const placeholder = `__LINK_${idx}__`;  
             links.push({text: linkText, url: finalUrl, placeholder});  
               
+            // Replace link with placeholder in the element  
             $link.replaceWith(placeholder);  
           } catch {  
+            // If URL processing fails, just keep the text  
           }  
         }  
       });  
         
+      // Now get all text with placeholders  
       let text = $elem.text();  
         
+      // Replace placeholders with markdown links  
       for (const link of links) {  
         text = text.replace(link.placeholder, `[${link.text}](${link.url})`);  
       }  
@@ -221,6 +312,7 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       
     console.log(`[Scraper] Processed ${processedElements} elements, skipped ${skippedElements}, extracted ${markdownContent.length} characters`);  
   
+    // Fallback: try to get all text if structured extraction failed  
     if (!markdownContent || markdownContent.length < 100) {  
       const fallbackText = contentElement.text().replace(/\s+/g, ' ').trim();  
       if (fallbackText.length >= 100) {  
@@ -228,6 +320,7 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       }  
     }  
       
+    // Last resort: try body if still no content  
     if (!markdownContent || markdownContent.length < 100) {  
       const bodyText = $('body').text().replace(/\s+/g, ' ').trim();  
       if (bodyText.length >= 200) {  
@@ -235,13 +328,18 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       }  
     }  
   
+    // CRITICAL: Remove related articles lists at the end  
+    // These typically appear as 10-30+ short sentences that look like article headlines  
+    markdownContent = removeRelatedArticlesList(markdownContent);  
+    console.log(`[Scraper] After related articles removal: ${markdownContent.length} characters`);  
+  
     if (!markdownContent || markdownContent.length < 100) {  
       throw new Error(`Could not extract sufficient content from the article. Extracted ${markdownContent?.length || 0} characters. The page structure may not be supported.`);  
     }  
   
     return {  
       title,  
-      content: markdownContent,  
+      content: markdownContent.substring(0, 50000),  
       url,  
       estonianTitle,  
     };  
@@ -251,12 +349,14 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
 }  
   
 async function translateWithGemini(  
-  ai: GoogleGenAI,  
   articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>,  
-  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }>,  
+  apiKey: string,  
   gemPrompt?: string,  
-  customPrompt?: string  
+  customPrompt?: string,  
+  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }> = []  
 ) {  
+  const ai = new GoogleGenAI({ apiKey });  
+  
   const defaultSystemPrompt = `You are a specialized translator for converting scientific articles from English into Estonian. You make no mistakes. You think hard and understand your instructions on the level of PhD philologist in both languages, English and Estonian.  
   
 Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
@@ -296,11 +396,22 @@ Content to EXCLUDE (do not translate):
 - Copyright notices and legal disclaimers  
 - Editorial notes ("Edited by...", "Reviewed by...", "Science X editorial process")  
 - "More information", "Provided by", "Citation" sections  
-- CRITICAL: Any list of article titles at the end (these are "related articles" suggestions, NOT part of the article content)  
-- If you see 10-30 short sentences that look like article headlines, STOP translating - those are related articles  
 - Newsletter/subscription prompts  
 - Social media sharing buttons text  
 - Image credits and captions  
+  
+CRITICAL - RELATED ARTICLES DETECTION (MUST STOP IMMEDIATELY):  
+- At the end of articles, you will often see lists of 5-30+ short sentences  
+- These are "related articles" / "you might also like" suggestions - NOT part of the article  
+- They look like article headlines: short (30-200 chars), no periods or just one period  
+- Examples of what to STOP at:  
+  * "Kirigami-stiilis langevarjukonstruktsioon lubab..."  
+  * "TA-näitleja Tilly Norwood tekitab Londonis..."  
+  * "Scientists discover new species in Amazon..."  
+  * "Researchers develop breakthrough battery technology..."  
+- When you see 3+ consecutive short headline-like sentences, IMMEDIATELY STOP translating  
+- These lists are NEVER part of the actual article content - they are recommendations  
+- Better to end the translation early than include these lists  
   
 Technical and Units:  
 - Use European units (kg, m, °C). Convert values when necessary  
@@ -371,8 +482,10 @@ CRITICAL:
 4. Example: Instead of '"This is amazing," said Dr. Smith' write 'Dr. Smith ütles, et see on hämmastav'  
 5. For names/technical terms with quotes in original: ALWAYS use « » (NEVER " " or ' ')  
 6. Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
-7. STOP translating when you reach related articles lists (multiple short headlines at the end)  
-8. DO NOT translate: copyright notices, editorial metadata, "More information" sections  
+7. 🚨 STOP IMMEDIATELY when you see 3+ consecutive short headline-like sentences - these are RELATED ARTICLES, not article content  
+8. Examples of where to STOP: "Kirigami-stiilis langevarjukonstruktsioon...", "Scientists discover new...", "Researchers develop..."  
+9. DO NOT translate: copyright notices, editorial metadata, "More information" sections, related articles lists  
+10. If you're unsure whether something is a related article, STOP EARLY rather than include it  
   
 Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`  
         }]  
@@ -406,12 +519,15 @@ Provide complete, professional Estonian translations for all articles (body text
   
 function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {  
   const elements: Array<TextRun | ExternalHyperlink> = [];  
-  const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;  
+  // More robust regex that handles URLs with parentheses, special characters, etc.  
+  // This regex properly captures URLs by looking for the closing ) that matches the opening (  
+  const linkRegex = /\[([^\]]+)\]\(((?:[^()]+|\([^)]*\))*)\)/g;  
     
   let lastIndex = 0;  
   let match = linkRegex.exec(text);  
     
   while (match !== null) {  
+    // Add text before the link  
     if (match.index > lastIndex) {  
       elements.push(  
         new TextRun({  
@@ -420,26 +536,43 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
       );  
     }  
       
-    elements.push(  
-      new ExternalHyperlink({  
-        children: [  
-          new TextRun({  
-            text: match[1],  
-            style: 'Hyperlink',  
-            color: '0563C1',  
-            underline: {  
-              type: 'single',  
-            },  
-          }),  
-        ],  
-        link: match[2],  
-      })  
-    );  
+    // Clean and validate the URL  
+    let url = match[2].trim();  
+      
+    // Remove any trailing punctuation that might have been captured  
+    url = url.replace(/[.,;!?]+$/, '');  
+      
+    // Only create hyperlink if URL looks valid  
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('www.')) {  
+      elements.push(  
+        new ExternalHyperlink({  
+          children: [  
+            new TextRun({  
+              text: match[1],  
+              style: 'Hyperlink',  
+              color: '0563C1',  
+              underline: {  
+                type: 'single',  
+              },  
+            }),  
+          ],  
+          link: url,  
+        })  
+      );  
+    } else {  
+      // If URL doesn't look valid, just output as plain text  
+      elements.push(  
+        new TextRun({  
+          text: `[${match[1]}](${url})`,  
+        })  
+      );  
+    }  
       
     lastIndex = match.index + match[0].length;  
     match = linkRegex.exec(text);  
   }  
     
+  // Add remaining text after the last link  
   if (lastIndex < text.length) {  
     elements.push(  
       new TextRun({  
@@ -449,7 +582,9 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
   }  
     
   return elements;  
-}  function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {  
+}  
+  
+function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {  
   const children: Paragraph[] = [];  
   
   const translationSections = translation.split(/---+/).map(s => s.trim()).filter(s => s.length > 0);  
@@ -476,7 +611,9 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
                 text: article.url,  
                 style: 'Hyperlink',  
                 color: '0563C1',  
-                underline: { type: 'single' },  
+                underline: {  
+                  type: 'single',  
+                },  
               }),  
             ],  
             link: article.url,  
@@ -490,20 +627,24 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
       })  
     );  
   
-    const translatedText = translationSections[idx] || '';  
-    const paragraphs = translatedText.split(/\n\n+/);  
-  
-    paragraphs.forEach((para) => {  
-      const trimmed = para.trim();  
-      if (trimmed) {  
+    const articleTranslation = translationSections[idx] || '';  
+      
+    for (const para of articleTranslation.split('\n\n')) {  
+      if (para.trim()) {  
+        const paraElements = parseMarkdownLinks(para.trim());  
+          
         children.push(  
           new Paragraph({  
-            children: parseMarkdownLinks(trimmed),  
+            children: paraElements,  
+            spacing: { after: 200 },  
+          }),  
+          new Paragraph({  
+            text: '',  
             spacing: { after: 200 },  
           })  
         );  
       }  
-    });  
+    }  
   
     if (idx < articles.length - 1) {  
       children.push(  
@@ -513,7 +654,7 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
         }),  
         new Paragraph({  
           text: '---',  
-          spacing: { after: 400 },  
+          spacing: { after: 200 },  
         }),  
         new Paragraph({  
           text: '',  
@@ -530,111 +671,112 @@ function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
     }],  
   });  
   
-  return doc;  
+  return Packer.toBuffer(doc);  
 }  
   
 export async function POST(request: NextRequest) {  
   try {  
     const body = await request.json();  
-    const { apiKey, articles: articleEntries, sessionId, userMessage, gemPrompt, customPrompt } = body;  
+    const { articleEntries, apiKey, gemPrompt, customPrompt, translationId, userInput } = body;  
   
     if (!apiKey) {  
       return NextResponse.json({ error: 'API key is required' }, { status: 400 });  
     }  
   
-    const ai = new GoogleGenAI({ apiKey });  
+    if (translationId && userInput) {  
+      const session = activeSessions.get(translationId);  
+      if (!session) {  
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 });  
+      }  
   
-    let session = activeSessions.get(sessionId);  
-  
-    if (userMessage && session) {  
+      session.conversationHistory.push({  
+        role: 'model',  
+        parts: [{ text: session.conversationHistory[session.conversationHistory.length - 1]?.parts[0]?.text || '' }]  
+      });  
       session.conversationHistory.push({  
         role: 'user',  
-        parts: [{ text: userMessage }],  
+        parts: [{ text: userInput }]  
       });  
   
       const result = await translateWithGemini(  
-        ai,  
         session.articles,  
-        session.conversationHistory,  
+        session.apiKey,  
         session.gemPrompt,  
-        session.customPrompt  
+        session.customPrompt,  
+        session.conversationHistory  
       );  
   
-      if (!result.complete) {  
-        session.conversationHistory.push({  
-          role: 'model',  
-          parts: [{ text: result.question || '' }],  
-        });  
+      if (result.complete && result.translation) {  
+        const docxBuffer = await generateDocx(  
+          session.articles,  
+          result.translation  
+        );  
+  
+        activeSessions.delete(translationId);  
   
         return NextResponse.json({  
-          question: result.question,  
+          complete: true,  
+          docx: Buffer.from(docxBuffer).toString('base64'),  
         });  
       }  
   
-      const doc = generateDocx(session.articles, result.translation);  
-      const buffer = await Packer.toBuffer(doc);  
-  
-      activeSessions.delete(sessionId);  
+      session.conversationHistory = result.conversationHistory || session.conversationHistory;  
   
       return NextResponse.json({  
-        downloadUrl: `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${buffer.toString('base64')}`,  
-        filename: 'translated_articles.docx',  
+        needsInput: true,  
+        question: result.question,  
+        translationId,  
+        progress: 60,  
       });  
     }  
   
     if (!articleEntries || articleEntries.length === 0) {  
-      return NextResponse.json({ error: 'At least one article URL is required' }, { status: 400 });  
+      return NextResponse.json({ error: 'At least one article is required' }, { status: 400 });  
     }  
   
-    const scrapedArticles = await Promise.all(  
-      articleEntries.map((entry: { url: string; estonianTitle?: string }) =>  
-        scrapeArticle(entry.url, entry.estonianTitle)  
-      )  
-    );  
+    const articles = [];  
+    for (const entry of articleEntries) {  
+      try {  
+        const article = await scrapeArticle(entry.url, entry.estonianTitle);  
+        articles.push(article);  
+      } catch (error) {  
+        console.error(`Failed to scrape ${entry.url}:`, error);  
+        return NextResponse.json(  
+          { error: `Failed to scrape article from ${entry.url}: ${error instanceof Error ? error.message : 'Unknown error'}` },  
+          { status: 500 }  
+        );  
+      }  
+    }  
   
+    const result = await translateWithGemini(articles, apiKey, gemPrompt, customPrompt);  
+  
+    if (result.complete && result.translation) {  
+      const docxBuffer = await generateDocx(articles, result.translation);  
+  
+      return NextResponse.json({  
+        complete: true,  
+        docx: Buffer.from(docxBuffer).toString('base64'),  
+      });  
+    }  
+  
+    const sessionId = `trans_${Date.now()}_${Math.random().toString(36).substring(7)}`;  
     activeSessions.set(sessionId, {  
-      articles: scrapedArticles,  
-      conversationHistory: [],  
+      articles,  
+      conversationHistory: result.conversationHistory || [],  
       apiKey,  
       gemPrompt,  
       customPrompt,  
     });  
   
-    const result = await translateWithGemini(  
-      ai,  
-      scrapedArticles,  
-      [],  
-      gemPrompt,  
-      customPrompt  
-    );  
-  
-    if (!result.complete) {  
-      const session = activeSessions.get(sessionId);  
-      if (session) {  
-        session.conversationHistory.push({  
-          role: 'model',  
-          parts: [{ text: result.question || '' }],  
-        });  
-      }  
-  
-      return NextResponse.json({  
-        question: result.question,  
-      });  
-    }  
-  
-    const doc = generateDocx(scrapedArticles, result.translation);  
-    const buffer = await Packer.toBuffer(doc);  
-  
-    activeSessions.delete(sessionId);  
-  
     return NextResponse.json({  
-      downloadUrl: `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${buffer.toString('base64')}`,  
-      filename: 'translated_articles.docx',  
+      needsInput: true,  
+      question: result.question,  
+      translationId: sessionId,  
     });  
   } catch (error) {  
     console.error('Translation error:', error);  
     return NextResponse.json(  
-      { error: error instanceof Error ? error.message : 'Translation failed' },  
+      { error: error instanceof Error ? error.message : 'An unexpected error occurred' },  
       { status: 500 }  
     );  
   }  
