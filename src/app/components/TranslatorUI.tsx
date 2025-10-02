@@ -183,7 +183,7 @@ export default function TranslatorUI() {
           Science Article Translator
         </h1>
         <p style={{ fontSize: '18px', color: '#334155' }}>
-          High-end English to Estonian translation powered by Gemini 2.0 Flash
+          High-end English to Estonian translation powered by Gemini 2.5 Pro
         </p>
       </div>
 
