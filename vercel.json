@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "src/app/api/**/*.ts": {
-      "includeFiles": "node_modules/@sparticuz/chromium/**"
-    }
-  }
-}
