@@ -99,7 +99,9 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       [id*="newsletter"], [id*="subscribe"], [id*="related"], [id*="copyright"]
     `.replace(/\s+/g, ' ').trim()).remove();
     const noisePatterns = [
-        /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i, /^\d{1,2}\/\d{1,2}/\d{2,4}/, /^\d{4}-\d{2}-\d{2}/,
+        /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i, 
+        /^\d{1,2}\/\d{1,2}\/\d{2,4}/, // <-- SEE RIDA ON PARANDATUD
+        /^\d{4}-\d{2}-\d{2}/,
         /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i, /^(edited by|reviewed by|written by|fact.?checked by)/i,
         /science x edit(or|orial) process|editorial process|editorial policies/i,
         /copyright|all rights reserved|©/i, /provided for (informational|information) purposes/i,
@@ -177,7 +179,6 @@ async function translateWithGemini(
 ) {
   const ai = new GoogleGenAI(apiKey);
 
-  // See on sinu pikk ja detailne prompt, mis on siia täies pikkuses kopeeritud.
   const defaultSystemPrompt = `You are a specialized translator for converting scientific articles from English into Estonian. You make no mistakes. You think hard and understand your instructions on the level of PhD philologist in both languages, English and Estonian.  
   
 Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
@@ -355,11 +356,10 @@ Provide complete, professional Estonian translations for all articles (body text
     contents = conversationHistory;
   }
  
-    // This is the original, working API call method
-    const model = ai.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
-    const result = await model.generateContent(contents[0].parts[0].text);
-    const response = result.response;
-    const responseText = response.text() || '';
+  const model = ai.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+  const result = await model.generateContent(contents[0].parts[0].text);
+  const response = result.response;
+  const responseText = response.text() || '';
   
   console.log(`[Gemini] Response length: ${responseText.length} characters`);
 
