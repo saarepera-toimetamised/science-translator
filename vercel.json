@@ -1,7 +1,1 @@
-{  
-  "functions": {  
-    "src/app/api/translate/route.ts": {  
-      "maxDuration": 300  
-    }  
-  }  
-}  
+
