@@ -3,7 +3,7 @@ import { GoogleGenAI } from '@google/genai';
 import * as cheerio from 'cheerio';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } from 'docx';
 import playwright from 'playwright-core';
-import chromium from '@sparticuz/chromium-min';
+import chromium from '@sparticuz/chromium';
 
 
 const activeSessions = new Map<string, {
@@ -297,311 +297,252 @@ async function translateWithGemini(
   customPrompt?: string,
   conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }> = []
 ) {
-  const genAI = new GoogleGenAI(apiKey);
+    const genAI = new GoogleGenAI(apiKey);
  
-  const defaultSystemPrompt = `You are a specialized translator for converting scientific articles from English into Estonian. You make no mistakes. You think hard and understand your instructions on the level of PhD philologist in both languages, English and Estonian.  
-  
-Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
-  
-🔗🔗🔗 HYPERLINKS - MOST CRITICAL RULE - READ THIS FIRST 🔗🔗🔗  
-  
-THIS IS THE #1 MOST IMPORTANT RULE - FAILURE TO FOLLOW THIS RULE MAKES THE TRANSLATION UNUSABLE:  
-  
-The source articles contain hyperlinks in markdown format like this: [anchor text](https://url.com)  
-You MUST preserve EVERY SINGLE hyperlink in your Estonian translation.  
-  
-MANDATORY HYPERLINK FORMAT:  
-✅ CORRECT: [eestikeelne tekst](https://originaal-url.com)  
-❌ WRONG: eestikeelne tekst  
-❌ WRONG: https://originaal-url.com  
-❌ WRONG: eestikeelne tekst https://originaal-url.com  
-  
-CONCRETE EXAMPLES - STUDY THESE CAREFULLY:  
-  
-Example 1:  
-English: "according to [researchers at MIT](https://mit.edu/study)"  
-Estonian: "nagu [MIT-i teadlased](https://mit.edu/study) väitsid"  
-  
-Example 2:  
-English: "The study shows [significant improvements](https://nature.com/article)"  
-Estonian: "Uuring näitab [märkimisväärseid täiustusi](https://nature.com/article)"  
-  
-Example 3:  
-English: "[OpenAI's latest model](https://openai.com/gpt4) performs better"  
-Estonian: "[OpenAI uusim mudel](https://openai.com/gpt4) töötab paremini"  
-  
-Example 4:  
-English: "As explained in [this article](https://example.com/long-url-with-parameters?id=123&source=test)"  
-Estonian: "Nagu [selles artiklis](https://example.com/long-url-with-parameters?id=123&source=test) selgitatakse"  
-  
-HYPERLINK RULES - NO EXCEPTIONS:  
-1. Translate the anchor text (the part in [square brackets]) to Estonian  
-2. Keep the URL (the part in parentheses) EXACTLY as it appears - DO NOT modify, shorten, or remove it  
-3. The markdown syntax [text](url) must be preserved exactly  
-4. NEVER output a bare URL like https://example.com - it must ALWAYS be inside [text](url) format  
-5. If the source has 20 links, your translation MUST have 20 links  
-6. Each URL must stay on ONE line - never split URLs across multiple lines  
-  
-THIS RULE OVERRIDES ALL OTHER RULES. If you must choose between perfect grammar and preserving links, PRESERVE THE LINKS.  
-  
-🔗🔗🔗 END OF HYPERLINK RULES 🔗🔗🔗  
-  
-CRITICAL RULES - MUST FOLLOW STRICTLY:  
-  
-Perspective and Quotations - CRITICAL:  
-- ALWAYS use third person perspective throughout the entire translation  
-- NEVER use first person (I, we) or second person (you)  
-- ABSOLUTELY NO quotation marks for speech/citations - convert ALL quotations into indirect speech  
-- Instead of: "This is amazing," said Dr. Smith → Write: Dr. Smith ütles, et see on hämmastav  
-- Instead of: "We discovered..." scientists reported → Write: Teadlased teatasid, et nad avastavad...  
-- For names, titles, technical terms, special expressions that have quotes in original: ALWAYS use « » (not " " or ' ')  
-- Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
-- NEVER use English quotes " " or ' ' - only Estonian quotes « »  
-- Do not use bold text  
-- Do not begin paragraphs with dates, years or other numbers  
-- EVERY statement must be in third person narrative form, no exceptions  
-  
-Accuracy and Completeness:  
-- Translate the entire text  
-- Preserve all details, tone, nuances, headings, lists, and paragraph order  
-- Do not omit anything  
-- Do not add meta-introductions. Output only the translation  
-  
-Content to EXCLUDE (do not translate):  
-- Copyright notices and legal disclaimers  
-- Editorial notes ("Edited by...", "Reviewed by...", "Science X editorial process")  
-- "More information", "Provided by", "Citation" sections  
-- Newsletter/subscription prompts  
-- Social media sharing buttons text  
-- Image credits and captions  
-  
-CRITICAL - RELATED ARTICLES DETECTION (MUST STOP IMMEDIATELY):  
-- At the end of articles, you will often see lists of 5-30+ short sentences  
-- These are "related articles" / "you might also like" suggestions - NOT part of the article  
-- They look like article headlines: short (30-200 chars), no periods or just one period  
-- Examples of what to STOP at:  
-  * "Kirigami-stiilis langevarjukonstruktsioon lubab..."  
-  * "TA-näitleja Tilly Norwood tekitab Londonis..."  
-  * "Scientists discover new species in Amazon..."  
-  * "Researchers develop breakthrough battery technology..."  
-- When you see 3+ consecutive short headline-like sentences, IMMEDIATELY STOP translating  
-- These lists are NEVER part of the actual article content - they are recommendations  
-- Better to end the translation early than include these lists  
-  
-Technical and Units:  
-- Use European units (kg, m, °C). Convert values when necessary  
-- Translate institution, company, and technology names into Estonian and add the English name with abbreviation in parentheses  
-  
-Glossary:  
-- healthy humans → terved inimesed  
-- healthy food → tervislik toit  
-- artificial intelligence → tehisaru  
-- AI → TA  
-  
-Media Handling:  
-- Remove all photos and captions  
-- For YouTube videos: Vaata videot YouTube'is  
-- For other videos: Vaata videot + platform name  
-- Keep all video links in their exact original location  
-  
-The final translation must be PUBLICATION-READY with:  
-- STRICT third person perspective throughout (no quotations, no direct speech)  
-- Proper Estonian grammar  
-- All hyperlinks embedded in Estonian text  
-- Indirect speech for all citations and statements`;
- 
-  const systemPrompt = gemPrompt || defaultSystemPrompt;
- 
-  const additionalInstructions = customPrompt ? `\n\nAdditional instructions: ${customPrompt}` : '';
- 
-  const guidancePrompt = `  
-If you need clarification about terminology, context, or specific translation choices, you should ask the user for guidance.  
-  
-When you have completed the translation, provide it in the following format:  
-TRANSLATION_COMPLETE  
-[Estonian translation of article 1 - DO NOT include the title, only the article body]  
----  
-[Estonian translation of article 2 - DO NOT include the title, only the article body]  
----  
-[Estonian translation of article 3 - DO NOT include the title, only the article body]  
-  
-CRITICAL:   
-- DO NOT include the article title in your translation (title will be added separately)  
-- Translate ONLY the article body/content  
-- Separate each article translation with three dashes (---) on their own line`;
- 
-  let contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
- 
-  if (conversationHistory.length === 0) {
-    const articlesText = articles.map((article, idx) => {
-      let articleHeader = `\n\n--- ARTICLE ${idx + 1} ---\nURL: ${article.url}\n`;
-      
-      if (article.estonianTitle) {
-        articleHeader += `Estonian Title (USE THIS, DO NOT TRANSLATE): ${article.estonianTitle}\n`;
-        articleHeader += `English Title (for reference only): ${article.title}\n`;
-      } else {
-        articleHeader += `Title: ${article.title}\n`;
-      }
-      
-      return `${articleHeader}\nContent: ${article.content}`;
-    }).join('\n');
-
-    contents = [
-      {
-        role: 'user',
-        parts: [{
-          text: `${systemPrompt}${additionalInstructions}${guidancePrompt}\n\nPlease translate the following ${articles.length} scientific article${articles.length > 1 ? 's' : ''} from English to Estonian:${articlesText}\n\nCRITICAL REMINDERS:  
-1. 🔗🔗🔗 HYPERLINKS ARE MANDATORY - Preserve EVERY [text](url) link from the source! This is the #1 priority!  
-2. DO NOT include the title in your translation - translate ONLY the article body/content  
-3. If an Estonian title is provided, it's for reference only - do NOT translate the English title  
-4. 🔗 HYPERLINK FORMAT: [eestikeelne tekst](https://original-url.com) - translate text, keep URL unchanged  
-5. STRICT THIRD PERSON PERSPECTIVE - Convert ALL speech/citations to indirect speech. NO quotation marks for speech  
-6. Example: Instead of '"This is amazing," said Dr. Smith' write 'Dr. Smith ütles, et see on hämmastav'  
-7. For names/technical terms with quotes in original: ALWAYS use « » (NEVER " " or ' ')  
-8. Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
-9. 🔗 COUNT THE LINKS: If source has 15 hyperlinks, your translation MUST have 15 hyperlinks in [text](url) format  
-10. 🚨 STOP IMMEDIATELY when you see 3+ consecutive short headline-like sentences - these are RELATED ARTICLES, not article content  
-11. Examples of where to STOP: "Kirigami-stiilis langevarjukonstruktsioon...", "Scientists discover new...", "Researchers develop..."  
-12. DO NOT translate: copyright notices, editorial metadata, "More information" sections, related articles lists  
-13. If you're unsure whether something is a related article, STOP EARLY rather than include it  
-  
-🔗 FINAL HYPERLINK CHECK BEFORE SUBMITTING:  
-- Did you preserve EVERY single [text](url) link from the source?  
-- Are all URLs wrapped in markdown format [text](url)?  
-- Did you translate the anchor text but keep URLs unchanged?  
-If you answer NO to any of these, DO NOT submit - fix the links first!  
-  
-Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`
-        }]
-      }
-    ];
-  } else {
-    contents = conversationHistory;
-  }
- 
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro-latest' });
-
-    const result = await model.startChat({
-        history: conversationHistory,
-    }).sendMessage(contents[contents.length-1].parts[0].text);
+    const defaultSystemPrompt = `You are a specialized translator for converting scientific articles from English into Estonian. You make no mistakes. You think hard and understand your instructions on the level of PhD philologist in both languages, English and Estonian.  
     
-    const responseText = result.response.text();
+  Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
     
-  console.log(`[Gemini] Response length: ${responseText.length} characters`);
-  console.log(`[Gemini] Response starts with: ${responseText.substring(0, 200)}`);
-  console.log(`[Gemini] Response ends with: ${responseText.substring(responseText.length - 200)}`);
-  console.log(`[Gemini] Contains TRANSLATION_COMPLETE: ${responseText.includes('TRANSLATION_COMPLETE')}`);
-
-  if (responseText.includes('TRANSLATION_COMPLETE')) {
-    const translation = responseText.split('TRANSLATION_COMPLETE')[1].trim();
-    console.log(`[Gemini] Translation length: ${translation.length} characters`);
-    console.log(`[Gemini] Number of --- separators: ${(translation.match(/---/g) || []).length}`);
+  🔗🔗🔗 HYPERLINKS - MOST CRITICAL RULE - READ THIS FIRST 🔗🔗🔗  
     
-    // Count hyperlinks in source and translation
-    const sourceLinksCount = articles.reduce((count, article) => {
-      return count + (article.content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
-    }, 0);
-    const translationLinksCount = (translation.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
+  THIS IS THE #1 MOST IMPORTANT RULE - FAILURE TO FOLLOW THIS RULE MAKES THE TRANSLATION UNUSABLE:  
     
-    console.log(`[Gemini] 🔗 Hyperlinks in source: ${sourceLinksCount}`);
-    console.log(`[Gemini] 🔗 Hyperlinks in translation: ${translationLinksCount}`);
+  The source articles contain hyperlinks in markdown format like this: [anchor text](https://url.com)  
+  You MUST preserve EVERY SINGLE hyperlink in your Estonian translation.  
     
-    if (translationLinksCount < sourceLinksCount) {
-      console.warn(`[Gemini] ⚠️ WARNING: Translation is missing ${sourceLinksCount - translationLinksCount} hyperlinks!`);
-    } else if (translationLinksCount === sourceLinksCount) {
-      console.log(`[Gemini] ✅ All hyperlinks preserved correctly!`);
-    }
+  MANDATORY HYPERLINK FORMAT:  
+  ✅ CORRECT: [eestikeelne tekst](https://originaal-url.com)  
+  ❌ WRONG: eestikeelne tekst  
+  ❌ WRONG: https://originaal-url.com  
+  ❌ WRONG: eestikeelne tekst https://originaal-url.com  
     
-    return { complete: true, translation };
-  }
-
-  return { complete: false, question: responseText, conversationHistory: contents };
-}
-
-function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
-  const elements: Array<TextRun | ExternalHyperlink> = [];
-  const linkRegex = /\[([^\]]+)\]\(((?:[^()]+|\([^)]*\))*)\)/g;
+  CONCRETE EXAMPLES - STUDY THESE CAREFULLY:  
+    
+  Example 1:  
+  English: "according to [researchers at MIT](https://mit.edu/study)"  
+  Estonian: "nagu [MIT-i teadlased](https://mit.edu/study) väitsid"  
+    
+  Example 2:  
+  English: "The study shows [significant improvements](https://nature.com/article)"  
+  Estonian: "Uuring näitab [märkimisväärseid täiustusi](https://nature.com/article)"  
+    
+  Example 3:  
+  English: "[OpenAI's latest model](https://openai.com/gpt4) performs better"  
+  Estonian: "[OpenAI uusim mudel](https://openai.com/gpt4) töötab paremini"  
+    
+  Example 4:  
+  English: "As explained in [this article](https://example.com/long-url-with-parameters?id=123&source=test)"  
+  Estonian: "Nagu [selles artiklis](https://example.com/long-url-with-parameters?id=123&source=test) selgitatakse"  
+    
+  HYPERLINK RULES - NO EXCEPTIONS:  
+  1. Translate the anchor text (the part in [square brackets]) to Estonian  
+  2. Keep the URL (the part in parentheses) EXACTLY as it appears - DO NOT modify, shorten, or remove it  
+  3. The markdown syntax [text](url) must be preserved exactly  
+  4. NEVER output a bare URL like https://example.com - it must ALWAYS be inside [text](url) format  
+  5. If the source has 20 links, your translation MUST have 20 links  
+  6. Each URL must stay on ONE line - never split URLs across multiple lines  
+    
+  THIS RULE OVERRIDES ALL OTHER RULES. If you must choose between perfect grammar and preserving links, PRESERVE THE LINKS.  
+    
+  🔗🔗🔗 END OF HYPERLINK RULES 🔗🔗🔗  
+    
+  CRITICAL RULES - MUST FOLLOW STRICTLY:  
+    
+  Perspective and Quotations - CRITICAL:  
+  - ALWAYS use third person perspective throughout the entire translation  
+  - NEVER use first person (I, we) or second person (you)  
+  - ABSOLUTELY NO quotation marks for speech/citations - convert ALL quotations into indirect speech  
+  - Instead of: "This is amazing," said Dr. Smith → Write: Dr. Smith ütles, et see on hämmastav  
+  - Instead of: "We discovered..." scientists reported → Write: Teadlased teatasid, et nad avastavad...  
+  - For names, titles, technical terms, special expressions that have quotes in original: ALWAYS use « » (not " " or ' ')  
+  - Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
+  - NEVER use English quotes " " or ' ' - only Estonian quotes « »  
+  - Do not use bold text  
+  - Do not begin paragraphs with dates, years or other numbers  
+  - EVERY statement must be in third person narrative form, no exceptions  
+    
+  Accuracy and Completeness:  
+  - Translate the entire text  
+  - Preserve all details, tone, nuances, headings, lists, and paragraph order  
+  - Do not omit anything  
+  - Do not add meta-introductions. Output only the translation  
+    
+  Content to EXCLUDE (do not translate):  
+  - Copyright notices and legal disclaimers  
+  - Editorial notes ("Edited by...", "Reviewed by...", "Science X editorial process")  
+  - "More information", "Provided by", "Citation" sections  
+  - Newsletter/subscription prompts  
+  - Social media sharing buttons text  
+  - Image credits and captions  
+    
+  CRITICAL - RELATED ARTICLES DETECTION (MUST STOP IMMEDIATELY):  
+  - At the end of articles, you will often see lists of 5-30+ short sentences  
+  - These are "related articles" / "you might also like" suggestions - NOT part of the article  
+  - They look like article headlines: short (30-200 chars), no periods or just one period  
+  - Examples of what to STOP at:  
+    * "Kirigami-stiilis langevarjukonstruktsioon lubab..."  
+    * "TA-näitleja Tilly Norwood tekitab Londonis..."  
+    * "Scientists discover new species in Amazon..."  
+    * "Researchers develop breakthrough battery technology..."  
+  - When you see 3+ consecutive short headline-like sentences, IMMEDIATELY STOP translating  
+  - These lists are NEVER part of the actual article content - they are recommendations  
+  - Better to end the translation early than include these lists  
+    
+  Technical and Units:  
+  - Use European units (kg, m, °C). Convert values when necessary  
+  - Translate institution, company, and technology names into Estonian and add the English name with abbreviation in parentheses  
+    
+  Glossary:  
+  - healthy humans → terved inimesed  
+  - healthy food → tervislik toit  
+  - artificial intelligence → tehisaru  
+  - AI → TA  
+    
+  Media Handling:  
+  - Remove all photos and captions  
+  - For YouTube videos: Vaata videot YouTube'is  
+  - For other videos: Vaata videot + platform name  
+  - Keep all video links in their exact original location  
+    
+  The final translation must be PUBLICATION-READY with:  
+  - STRICT third person perspective throughout (no quotations, no direct speech)  
+  - Proper Estonian grammar  
+  - All hyperlinks embedded in Estonian text  
+  - Indirect speech for all citations and statements`;
+   
+    const systemPrompt = gemPrompt || defaultSystemPrompt;
+   
+    const additionalInstructions = customPrompt ? `\n\nAdditional instructions: ${customPrompt}` : '';
+   
+    const guidancePrompt = `  
+  If you need clarification about terminology, context, or specific translation choices, you should ask the user for guidance.  
+    
+  When you have completed the translation, provide it in the following format:  
+  TRANSLATION_COMPLETE  
+  [Estonian translation of article 1 - DO NOT include the title, only the article body]  
+  ---  
+  [Estonian translation of article 2 - DO NOT include the title, only the article body]  
+  ---  
+  [Estonian translation of article 3 - DO NOT include the title, only the article body]  
+    
+  CRITICAL:   
+  - DO NOT include the article title in your translation (title will be added separately)  
+  - Translate ONLY the article body/content  
+  - Separate each article translation with three dashes (---) on their own line`;
+   
+    let contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+   
+    if (conversationHistory.length === 0) {
+      const articlesText = articles.map((article, idx) => {
+        let articleHeader = `\n\n--- ARTICLE ${idx + 1} ---\nURL: ${article.url}\n`;
+        
+        if (article.estonianTitle) {
+          articleHeader += `Estonian Title (USE THIS, DO NOT TRANSLATE): ${article.estonianTitle}\n`;
+          articleHeader += `English Title (for reference only): ${article.title}\n`;
+        } else {
+          articleHeader += `Title: ${article.title}\n`;
+        }
+        
+        return `${articleHeader}\nContent: ${article.content}`;
+      }).join('\n');
   
-  let lastIndex = 0;
-  let match = linkRegex.exec(text);
-  
-  while (match !== null) {
-    if (match.index > lastIndex) {
-      elements.push(
-        new TextRun({
-          text: text.substring(lastIndex, match.index),
-        })
-      );
-    }
+      contents = [
+        {
+          role: 'user',
+          parts: [{
+            text: `${systemPrompt}${additionalInstructions}${guidancePrompt}\n\nPlease translate the following ${articles.length} scientific article${articles.length > 1 ? 's' : ''} from English to Estonian:${articlesText}\n\nCRITICAL REMINDERS:  
+  1. 🔗🔗🔗 HYPERLINKS ARE MANDATORY - Preserve EVERY [text](url) link from the source! This is the #1 priority!  
+  2. DO NOT include the title in your translation - translate ONLY the article body/content  
+  3. If an Estonian title is provided, it's for reference only - do NOT translate the English title  
+  4. 🔗 HYPERLINK FORMAT: [eestikeelne tekst](https://original-url.com) - translate text, keep URL unchanged  
+  5. STRICT THIRD PERSON PERSPECTIVE - Convert ALL speech/citations to indirect speech. NO quotation marks for speech  
+  6. Example: Instead of '"This is amazing," said Dr. Smith' write 'Dr. Smith ütles, et see on hämmastav'  
+  7. For names/technical terms with quotes in original: ALWAYS use « » (NEVER " " or ' ')  
+  8. Example: The "power-up" mechanism → «võimsuse lisamise» mehhanism  
+  9. 🔗 COUNT THE LINKS: If source has 15 hyperlinks, your translation MUST have 15 hyperlinks in [text](url) format  
+  10. 🚨 STOP IMMEDIATELY when you see 3+ consecutive short headline-like sentences - these are RELATED ARTICLES, not article content  
+  11. Examples of where to STOP: "Kirigami-stiilis langevarjukonstruktsioon...", "Scientists discover new...", "Researchers develop..."  
+  12. DO NOT translate: copyright notices, editorial metadata, "More information" sections, related articles lists  
+  13. If you're unsure whether something is a related article, STOP EARLY rather than include it  
     
-    let url = match[2].trim();
+  🔗 FINAL HYPERLINK CHECK BEFORE SUBMITTING:  
+  - Did you preserve EVERY single [text](url) link from the source?  
+  - Are all URLs wrapped in markdown format [text](url)?  
+  - Did you translate the anchor text but keep URLs unchanged?  
+  If you answer NO to any of these, DO NOT submit - fix the links first!  
     
-    url = url.replace(/[.,;!?]+$/, '');
-    
-    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('www.')) {
-      elements.push(
-        new ExternalHyperlink({
-          children: [
-            new TextRun({
-              text: match[1],
-              style: 'Hyperlink',
-              color: '0563C1',
-              underline: {
-                type: 'single',
-              },
-            }),
-          ],
-          link: url,
-        })
-      );
+  Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`
+          }]
+        }
+      ];
     } else {
-      elements.push(
-        new TextRun({
-          text: `[${match[1]}](${url})`,
-        })
-      );
+      contents = conversationHistory;
     }
-    
-    lastIndex = match.index + match[0].length;
-    match = linkRegex.exec(text);
-  }
+   
+      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro-latest' });
   
-  if (lastIndex < text.length) {
-    elements.push(
-      new TextRun({
-        text: text.substring(lastIndex),
-      })
-    );
-  }
+      const result = await model.startChat({
+          history: conversationHistory,
+      }).sendMessage(contents[contents.length-1].parts[0].text);
+      
+      const responseText = result.response.text();
+      
+    console.log(`[Gemini] Response length: ${responseText.length} characters`);
+    console.log(`[Gemini] Response starts with: ${responseText.substring(0, 200)}`);
+    console.log(`[Gemini] Response ends with: ${responseText.substring(responseText.length - 200)}`);
+    console.log(`[Gemini] Contains TRANSLATION_COMPLETE: ${responseText.includes('TRANSLATION_COMPLETE')}`);
   
-  return elements;
+    if (responseText.includes('TRANSLATION_COMPLETE')) {
+      const translation = responseText.split('TRANSLATION_COMPLETE')[1].trim();
+      console.log(`[Gemini] Translation length: ${translation.length} characters`);
+      console.log(`[Gemini] Number of --- separators: ${(translation.match(/---/g) || []).length}`);
+      
+      const sourceLinksCount = articles.reduce((count, article) => {
+        return count + (article.content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
+      }, 0);
+      const translationLinksCount = (translation.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
+      
+      console.log(`[Gemini] 🔗 Hyperlinks in source: ${sourceLinksCount}`);
+      console.log(`[Gemini] 🔗 Hyperlinks in translation: ${translationLinksCount}`);
+      
+      if (translationLinksCount < sourceLinksCount) {
+        console.warn(`[Gemini] ⚠️ WARNING: Translation is missing ${sourceLinksCount - translationLinksCount} hyperlinks!`);
+      } else if (translationLinksCount === sourceLinksCount) {
+        console.log(`[Gemini] ✅ All hyperlinks preserved correctly!`);
+      }
+      
+      return { complete: true, translation };
+    }
+  
+    return { complete: false, question: responseText, conversationHistory: contents };
 }
-
-function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {
-  const children: Paragraph[] = [];
-
-  const translationSections = translation.split(/---+/).map(s => s.trim()).filter(s => s.length > 0);
-
-  articles.forEach((article, idx) => {
-    const displayTitle = article.estonianTitle || article.title;
+  
+function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
+    const elements: Array<TextRun | ExternalHyperlink> = [];
+    const linkRegex = /\[([^\]]+)\]\(((?:[^()]+|\([^)]*\))*)\)/g;
     
-    children.push(
-      new Paragraph({
-        children: [
+    let lastIndex = 0;
+    let match = linkRegex.exec(text);
+    
+    while (match !== null) {
+      if (match.index > lastIndex) {
+        elements.push(
           new TextRun({
-            text: displayTitle,
-            bold: true,
-            size: 24,
-          }),
-        ],
-        spacing: { after: 200 },
-      }),
-      new Paragraph({
-        children: [
+            text: text.substring(lastIndex, match.index),
+          })
+        );
+      }
+      
+      let url = match[2].trim();
+      
+      url = url.replace(/[.,;!?]+$/, '');
+      
+      if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('www.')) {
+        elements.push(
           new ExternalHyperlink({
             children: [
               new TextRun({
-                text: article.url,
+                text: match[1],
                 style: 'Hyperlink',
                 color: '0563C1',
                 underline: {
@@ -609,26 +550,102 @@ function generateDocx(articles: Array<{ title: string; url: string; estonianTitl
                 },
               }),
             ],
-            link: article.url,
-          }),
-        ],
-        spacing: { after: 200 },
-      }),
-      new Paragraph({
-        text: '',
-        spacing: { after: 200 },
-      })
-    );
-
-    const articleTranslation = translationSections[idx] || '';
+            link: url,
+          })
+        );
+      } else {
+        elements.push(
+          new TextRun({
+            text: `[${match[1]}](${url})`,
+          })
+        );
+      }
+      
+      lastIndex = match.index + match[0].length;
+      match = linkRegex.exec(text);
+    }
     
-    for (const para of articleTranslation.split('\n\n')) {
-      if (para.trim()) {
-        const paraElements = parseMarkdownLinks(para.trim());
-        
+    if (lastIndex < text.length) {
+      elements.push(
+        new TextRun({
+          text: text.substring(lastIndex),
+        })
+      );
+    }
+    
+    return elements;
+}
+  
+function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {
+    const children: Paragraph[] = [];
+  
+    const translationSections = translation.split(/---+/).map(s => s.trim()).filter(s => s.length > 0);
+  
+    articles.forEach((article, idx) => {
+      const displayTitle = article.estonianTitle || article.title;
+      
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: displayTitle,
+              bold: true,
+              size: 24,
+            }),
+          ],
+          spacing: { after: 200 },
+        }),
+        new Paragraph({
+          children: [
+            new ExternalHyperlink({
+              children: [
+                new TextRun({
+                  text: article.url,
+                  style: 'Hyperlink',
+                  color: '0563C1',
+                  underline: {
+                    type: 'single',
+                  },
+                }),
+              ],
+              link: article.url,
+            }),
+          ],
+          spacing: { after: 200 },
+        }),
+        new Paragraph({
+          text: '',
+          spacing: { after: 200 },
+        })
+      );
+  
+      const articleTranslation = translationSections[idx] || '';
+      
+      for (const para of articleTranslation.split('\n\n')) {
+        if (para.trim()) {
+          const paraElements = parseMarkdownLinks(para.trim());
+          
+          children.push(
+            new Paragraph({
+              children: paraElements,
+              spacing: { after: 200 },
+            }),
+            new Paragraph({
+              text: '',
+              spacing: { after: 200 },
+            })
+          );
+        }
+      }
+  
+      if (idx < articles.length - 1) {
         children.push(
           new Paragraph({
-            children: paraElements,
+            text: '',
+            spacing: { after: 200 },
+          }),
+          new Paragraph({
+            text: '---',
             spacing: { after: 200 },
           }),
           new Paragraph({
@@ -637,140 +654,122 @@ function generateDocx(articles: Array<{ title: string; url: string; estonianTitl
           })
         );
       }
-    }
-
-    if (idx < articles.length - 1) {
-      children.push(
-        new Paragraph({
-          text: '',
-          spacing: { after: 200 },
-        }),
-        new Paragraph({
-          text: '---',
-          spacing: { after: 200 },
-        }),
-        new Paragraph({
-          text: '',
-          spacing: { after: 200 },
-        })
-      );
-    }
-  });
-
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children,
-    }],
-  });
-
-  return Packer.toBuffer(doc);
+    });
+  
+    const doc = new Document({
+      sections: [{
+        properties: {},
+        children,
+      }],
+    });
+  
+    return Packer.toBuffer(doc);
 }
-
+  
 export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const { articleEntries, apiKey, gemPrompt, customPrompt, translationId, userInput } = body;
-
-    if (!apiKey) {
-      return NextResponse.json({ error: 'API key is required' }, { status: 400 });
-    }
-
-    if (translationId && userInput) {
-      const session = activeSessions.get(translationId);
-      if (!session) {
-        return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    try {
+      const body = await request.json();
+      const { articleEntries, apiKey, gemPrompt, customPrompt, translationId, userInput } = body;
+  
+      if (!apiKey) {
+        return NextResponse.json({ error: 'API key is required' }, { status: 400 });
       }
-
-      session.conversationHistory.push({
-        role: 'model',
-        parts: [{ text: session.conversationHistory[session.conversationHistory.length - 1]?.parts[0]?.text || '' }]
-      });
-      session.conversationHistory.push({
-        role: 'user',
-        parts: [{ text: userInput }]
-      });
-
-      const result = await translateWithGemini(
-        session.articles,
-        session.apiKey,
-        session.gemPrompt,
-        session.customPrompt,
-        session.conversationHistory
-      );
-
-      if (result.complete && result.translation) {
-        const docxBuffer = await generateDocx(
+  
+      if (translationId && userInput) {
+        const session = activeSessions.get(translationId);
+        if (!session) {
+          return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+        }
+  
+        session.conversationHistory.push({
+          role: 'model',
+          parts: [{ text: session.conversationHistory[session.conversationHistory.length - 1]?.parts[0]?.text || '' }]
+        });
+        session.conversationHistory.push({
+          role: 'user',
+          parts: [{ text: userInput }]
+        });
+  
+        const result = await translateWithGemini(
           session.articles,
-          result.translation
+          session.apiKey,
+          session.gemPrompt,
+          session.customPrompt,
+          session.conversationHistory
         );
-
-        activeSessions.delete(translationId);
-
+  
+        if (result.complete && result.translation) {
+          const docxBuffer = await generateDocx(
+            session.articles,
+            result.translation
+          );
+  
+          activeSessions.delete(translationId);
+  
+          return NextResponse.json({
+            complete: true,
+            docx: Buffer.from(docxBuffer).toString('base64'),
+          });
+        }
+  
+        session.conversationHistory = result.conversationHistory || session.conversationHistory;
+  
+        return NextResponse.json({
+          needsInput: true,
+          question: result.question,
+          translationId,
+          progress: 60,
+        });
+      }
+  
+      if (!articleEntries || articleEntries.length === 0) {
+        return NextResponse.json({ error: 'At least one article is required' }, { status: 400 });
+      }
+  
+      const articles = [];
+      for (const entry of articleEntries) {
+        try {
+          const article = await scrapeArticle(entry.url, entry.estonianTitle);
+          articles.push(article);
+        } catch (error) {
+          console.error(`Failed to scrape ${entry.url}:`, error);
+          return NextResponse.json(
+            { error: `Failed to scrape article from ${entry.url}: ${error instanceof Error ? error.message : 'Unknown error'}` },
+            { status: 500 }
+          );
+        }
+      }
+  
+      const result = await translateWithGemini(articles, apiKey, gemPrompt, customPrompt);
+  
+      if (result.complete && result.translation) {
+        const docxBuffer = await generateDocx(articles, result.translation);
+  
         return NextResponse.json({
           complete: true,
           docx: Buffer.from(docxBuffer).toString('base64'),
         });
       }
-
-      session.conversationHistory = result.conversationHistory || session.conversationHistory;
-
+  
+      const sessionId = `trans_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      activeSessions.set(sessionId, {
+        articles,
+        conversationHistory: result.conversationHistory || [],
+        apiKey,
+        gemPrompt,
+        customPrompt,
+      });
+  
       return NextResponse.json({
         needsInput: true,
         question: result.question,
-        translationId,
-        progress: 60,
+        translationId: sessionId,
       });
+    } catch (error) {
+      console.error('Translation error:', error);
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'An unexpected error occurred' },
+        { status: 500 }
+      );
     }
-
-    if (!articleEntries || articleEntries.length === 0) {
-      return NextResponse.json({ error: 'At least one article is required' }, { status: 400 });
-    }
-
-    const articles = [];
-    for (const entry of articleEntries) {
-      try {
-        const article = await scrapeArticle(entry.url, entry.estonianTitle);
-        articles.push(article);
-      } catch (error) {
-        console.error(`Failed to scrape ${entry.url}:`, error);
-        return NextResponse.json(
-          { error: `Failed to scrape article from ${entry.url}: ${error instanceof Error ? error.message : 'Unknown error'}` },
-          { status: 500 }
-        );
-      }
-    }
-
-    const result = await translateWithGemini(articles, apiKey, gemPrompt, customPrompt);
-
-    if (result.complete && result.translation) {
-      const docxBuffer = await generateDocx(articles, result.translation);
-
-      return NextResponse.json({
-        complete: true,
-        docx: Buffer.from(docxBuffer).toString('base64'),
-      });
-    }
-
-    const sessionId = `trans_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    activeSessions.set(sessionId, {
-      articles,
-      conversationHistory: result.conversationHistory || [],
-      apiKey,
-      gemPrompt,
-      customPrompt,
-    });
-
-    return NextResponse.json({
-      needsInput: true,
-      question: result.question,
-      translationId: sessionId,
-    });
-  } catch (error) {
-    console.error('Translation error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'An unexpected error occurred' },
-      { status: 500 }
-    );
-  }
 }
