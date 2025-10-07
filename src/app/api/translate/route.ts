@@ -356,14 +356,8 @@ Provide complete, professional Estonian translations for all articles (body text
     contents = conversationHistory;
   }
  
-    const model = ai.getGenerativeModel({ 
-        model: "gemini-1.5-pro-latest",
-        generationConfig: {
-            temperature: 0.3,
-        }
-    });
-    
-    // Siin on tagasi sinu algne, töötav API kutse
+    // This is the original, working API call method
+    const model = ai.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
     const result = await model.generateContent(contents[0].parts[0].text);
     const response = result.response;
     const responseText = response.text() || '';
