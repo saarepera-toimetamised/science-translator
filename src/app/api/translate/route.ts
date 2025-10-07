@@ -3,9 +3,6 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as cheerio from 'cheerio';  
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } from 'docx';  
   
-// Set maximum execution time to 300 seconds (5 minutes) for translating multiple articles  
-export const maxDuration = 300;  
-  
 const activeSessions = new Map<string, {  
   articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>;  
   conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }>;  
