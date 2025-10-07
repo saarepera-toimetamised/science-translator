@@ -14,9 +14,6 @@ const activeSessions = new Map<string, {
   customPrompt?: string;
 }>();
 
-/**
- * Removes "related articles" lists that appear at the end of scraped content.
- */
 function removeRelatedArticlesList(content: string): string {
   const paragraphs = content.split('\n\n').filter(p => p.trim().length > 0);
   
@@ -66,11 +63,9 @@ async function scrapeWithPlaywright(url: string): Promise<string> {
     let browser = null;
     console.log('[Scraper] Initializing Playwright with serverless Chromium...');
     try {
-        const executablePath = await chromium.executablePath();
-        
         browser = await playwright.chromium.launch({
-            executablePath,
             args: chromium.args,
+            executablePath: await chromium.executablePath(),
             headless: true,
         });
 
@@ -83,7 +78,7 @@ async function scrapeWithPlaywright(url: string): Promise<string> {
         await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
 
         console.log(`[Playwright] Navigating to URL: ${url}`);
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
         
         await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -93,6 +88,7 @@ async function scrapeWithPlaywright(url: string): Promise<string> {
 
     } catch (error) {
         console.error(`[Playwright] Error during scraping: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        console.error(error); 
         throw new Error(`Playwright failed to scrape the page: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
         if (browser) {
@@ -283,6 +279,8 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
     throw new Error(`Failed to parse article content: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
+
+// Jätkub teises osas...// Jätkub esimesest osast...
 
 async function translateWithGemini(
   articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>,
@@ -549,6 +547,8 @@ function generateDocx(articles: Array<{ title: string; url: string; estonianTitl
           spacing: { after: 200 },
         })
       );
+  
+// Jätkub kolmandas osas...// Jätkub teisest osast...
   
       const articleTranslation = translationSections[idx] || '';
       
