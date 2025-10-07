@@ -13,7 +13,9 @@ const activeSessions = new Map<string, {
 
 function removeRelatedArticlesList(content: string): string {
   const paragraphs = content.split('\n\n').filter(p => p.trim().length > 0);
-  if (paragraphs.length < 3) return content;
+  if (paragraphs.length < 3) {
+    return content;
+  }
   let cutoffIndex = paragraphs.length;
   let consecutiveShortCount = 0;
   for (let i = paragraphs.length - 1; i >= 0; i--) {
@@ -28,7 +30,9 @@ function removeRelatedArticlesList(content: string): string {
     );
     if (looksLikeHeadline) {
       consecutiveShortCount++;
-      if (consecutiveShortCount >= 5) cutoffIndex = i;
+      if (consecutiveShortCount >= 5) {
+        cutoffIndex = i;
+      }
     } else if (paraLength > 300) {
       consecutiveShortCount = 0;
       break;
@@ -65,21 +69,27 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
     console.log(`[Scraper] HTML received: ${html.length} characters`);
     const $ = cheerio.load(html);
     const baseUrl = new URL(url);
-    let title = $('h1').first().text().trim() || $('title').text().trim();
+    let title = $('h1').first().text().trim();
+    if (!title) {
+      title = $('title').text().trim();
+    }
     const contentSelectors = [
-        '.article-main', '.entry-content', 'article .entry-content', '.post-content', 
-        '.article-content', '.article-body', 'article', '[role="main"]', '.content', 
-        '.post', '.single-post', '.entry', '#content', '#main-content', 'main article', 'main',
+      '.article-main', '.entry-content', 'article .entry-content', '.post-content',
+      '.article-content', '.article-body', 'article', '[role="main"]', '.content',
+      '.post', '.single-post', '.entry', '#content', '#main-content', 'main article', 'main',
     ];
     let contentElement = null;
+    let selectedSelector = '';
     for (const selector of contentSelectors) {
       const element = $(selector);
       if (element.length) {
         const text = element.text().trim();
         const paragraphCount = element.find('p').length;
+        console.log(`[Scraper] Trying selector: ${selector}, found: ${element.length}, text length: ${text.length}, paragraphs: ${paragraphCount}`);
         if (text.length > 150 || paragraphCount >= 3) {
           contentElement = element;
-          console.log(`[Scraper] ✓ Selected content with selector: ${selector}`);
+          selectedSelector = selector;
+          console.log(`[Scraper] ✓ Selected content with selector: ${selector}, length: ${text.length}, paragraphs: ${paragraphCount}`);
           break;
         }
       }
@@ -87,7 +97,9 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
     if (!contentElement || contentElement.length === 0) {
       console.log('[Scraper] No content found with selectors, falling back to body');
       contentElement = $('body');
+      selectedSelector = 'body';
     }
+    console.log(`[Scraper] Processing content from: ${selectedSelector}`);
     contentElement.find(`
       script, style, nav, header, footer, aside, iframe,
       .ad, .advertisement, .promo, .promotion, .social-share, .share-buttons, .social-links, .social-follow,
@@ -99,17 +111,15 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
       [id*="newsletter"], [id*="subscribe"], [id*="related"], [id*="copyright"]
     `.replace(/\s+/g, ' ').trim()).remove();
     const noisePatterns = [
-        /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i, 
-        /^\d{1,2}\/\d{1,2}\/\d{2,4}/, // <-- SEE RIDA ON PARANDATUD
-        /^\d{4}-\d{2}-\d{2}/,
-        /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i, /^(edited by|reviewed by|written by|fact.?checked by)/i,
-        /science x edit(or|orial) process|editorial process|editorial policies/i,
-        /copyright|all rights reserved|©/i, /provided for (informational|information) purposes/i,
-        /^(provided by|more information|further information|additional information)/i, /^(citation|reference|doi):/i,
-        /subscribe|newsletter|sign up for|join (our|the)/i, /share (this|the) (article|story|post)/i,
-        /(facebook|twitter|instagram|linkedin|youtube|google|discover|news)/i, /click here|learn more|find out|discover more/i,
-        /related (articles|stories|posts|content|news|reading)/i, /you (may|might) (also )?(like|enjoy|want|be interested)/i,
-        /leave a comment|post a comment|comments|no comments/i,
+      /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i, /^\d{1,2}\/\d{1,2}\/\d{2,4}/, /^\d{4}-\d{2}-\d{2}/,
+      /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i, /^(edited by|reviewed by|written by|fact.?checked by)/i,
+      /science x edit(or|orial) process|editorial process|editorial policies/i, /the (article|story|content) has been reviewed/i, /editors have highlighted the following/i,
+      /copyright|all rights reserved|©/i, /this document is (subject to )?copyright/i, /no part may be reproduced/i, /without written permission/i, /provided for (informational|information) purposes/i, /fair (dealing|use)/i,
+      /^(provided by|more information|further information|additional information)/i, /^(citation|reference|doi):/i, /subscribe|newsletter|sign up for|join (our|the)/i, /(don't|don't|never) miss/i,
+      /follow us (on|at|in)/i, /like us on/i, /get (the latest|updates|our)/i, /stay (updated|connected|informed)/i, /share (this|the) (article|story|post)/i,
+      /(facebook|twitter|instagram|linkedin|youtube|google|discover|news)\s*(,|\s|and)/i, /follow.*?(facebook|twitter|instagram|linkedin|youtube)/i, /click here|learn more|find out|discover more/i,
+      /related (articles|stories|posts|content|news|reading)/i, /you (may|might) (also )?(like|enjoy|want|be interested)/i, /recommended for you|recommended stories/i,
+      /explore more|read more about|see also|see more/i, /trending|popular (articles|stories|posts)/i, /latest (articles|stories|posts|news)/i, /leave a comment|post a comment|comments|no comments/i,
     ];
     let markdownContent = '';
     contentElement.find('p, h2, h3, h4, h5, h6, div.paragraph, div[class*="content"], div[class*="text"]').each((_, elem) => {
@@ -154,6 +164,10 @@ async function scrapeArticle(url: string, estonianTitle?: string) {
     if (!markdownContent || markdownContent.length < 100) {
         const fallbackText = contentElement.text().replace(/\s+/g, ' ').trim();
         if (fallbackText.length >= 100) markdownContent = fallbackText;
+    }
+    if (!markdownContent || markdownContent.length < 100) {
+        const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+        if (bodyText.length >= 200) markdownContent = bodyText;
     }
     markdownContent = removeRelatedArticlesList(markdownContent);
     if (!markdownContent || markdownContent.length < 100) {
@@ -356,10 +370,11 @@ Provide complete, professional Estonian translations for all articles (body text
     contents = conversationHistory;
   }
  
-  const model = ai.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
-  const result = await model.generateContent(contents[0].parts[0].text);
-  const response = result.response;
-  const responseText = response.text() || '';
+    const response = await ai.getGenerativeModel({ model: "gemini-1.5-pro-latest" }).generateContent({
+        contents,
+    });
+    
+    const responseText = response.response.text();
   
   console.log(`[Gemini] Response length: ${responseText.length} characters`);
 
