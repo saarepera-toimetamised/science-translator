@@ -1,362 +1,304 @@
-import { type NextRequest, NextResponse } from 'next/server';  
-import { GoogleGenAI } from '@google/genai';  
-import * as cheerio from 'cheerio';  
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } from 'docx';  
+import { type NextRequest, NextResponse } from 'next/server';
+import { GoogleGenAI } from '@google/genai';
+import * as cheerio from 'cheerio';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } from 'docx';
+import playwright from 'playwright-core';
+import chromium from '@sparticuz/chromium-min';
+
+
+const activeSessions = new Map<string, {
+  articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>;
+  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }>;
+  apiKey: string;
+  gemPrompt?: string;
+  customPrompt?: string;
+}>();
+
+/**
+ * Removes "related articles" lists that appear at the end of scraped content.
+ */
+function removeRelatedArticlesList(content: string): string {
+  const paragraphs = content.split('\n\n').filter(p => p.trim().length > 0);
   
-const activeSessions = new Map<string, {  
-  articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>;  
-  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }>;  
-  apiKey: string;  
-  gemPrompt?: string;  
-  customPrompt?: string;  
-}>();  
+  if (paragraphs.length < 3) {
+    return content;
+  }
   
-/**  
- * Removes "related articles" lists that appear at the end of scraped content.  
- * These lists typically consist of 5-30+ short sentences (article headlines) grouped together.  
- */  
-function removeRelatedArticlesList(content: string): string {  
-  const paragraphs = content.split('\n\n').filter(p => p.trim().length > 0);  
+  let cutoffIndex = paragraphs.length;
+  let consecutiveShortCount = 0;
+  
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const para = paragraphs[i].trim();
+    const paraLength = para.length;
     
-  if (paragraphs.length < 3) {  
-    return content; // Too short to have related articles  
-  }  
-    
-  // Find the cutoff point where related articles likely start  
-  // Indicators: sudden appearance of many short paragraphs (50-150 chars each)  
-  let cutoffIndex = paragraphs.length;  
-  let consecutiveShortCount = 0;  
-    
-  for (let i = paragraphs.length - 1; i >= 0; i--) {  
-    const para = paragraphs[i].trim();  
-    const paraLength = para.length;  
-      
-    // Check if this looks like an article headline:  
-    // - Short (30-200 characters)  
-    // - No periods at the end OR only one period  
-    // - Doesn't start with common article text patterns  
-    const periodCount = (para.match(/\./g) || []).length;  
-    const looksLikeHeadline = (  
+    const periodCount = (para.match(/\./g) || []).length;
+    const looksLikeHeadline = (
       paraLength >= 30 &&   
       paraLength <= 200 &&   
-      periodCount <= 1 &&  
-      !para.match(/^(the|a|an|in|on|at|this|these|scientists|researchers|according)/i)  
-    );  
-      
-    if (looksLikeHeadline) {  
-      consecutiveShortCount++;  
-        
-      // If we find 5+ consecutive headline-like paragraphs, this is likely the start of related articles  
-      if (consecutiveShortCount >= 5) {  
-        cutoffIndex = i;  
-      }  
-    } else if (paraLength > 300) {  
-      // Hit a substantial paragraph - stop looking  
-      consecutiveShortCount = 0;  
-      break;  
-    } else {  
-      consecutiveShortCount = 0;  
-    }  
-  }  
+      periodCount <= 1 &&
+      !para.match(/^(the|a|an|in|on|at|this|these|scientists|researchers|according)/i)
+    );
     
-  // If we found a cutoff point, trim the content there  
-  if (cutoffIndex < paragraphs.length - 4) {  
-    const cleanedParagraphs = paragraphs.slice(0, cutoffIndex);  
-    console.log(`[Related Articles Filter] Removed ${paragraphs.length - cutoffIndex} suspected related article titles`);  
-    return cleanedParagraphs.join('\n\n');  
-  }  
+    if (looksLikeHeadline) {
+      consecutiveShortCount++;
+      
+      if (consecutiveShortCount >= 5) {
+        cutoffIndex = i;
+      }
+    } else if (paraLength > 300) {
+      consecutiveShortCount = 0;
+      break;
+    } else {
+      consecutiveShortCount = 0;
+    }
+  }
+  
+  if (cutoffIndex < paragraphs.length - 4) {
+    const cleanedParagraphs = paragraphs.slice(0, cutoffIndex);
+    console.log(`[Related Articles Filter] Removed ${paragraphs.length - cutoffIndex} suspected related article titles`);
+    return cleanedParagraphs.join('\n\n');
+  }
+  
+  return content;
+}
+
+async function scrapeWithPlaywright(url: string): Promise<string> {
+    let browser = null;
+    console.log('[Scraper] Initializing Playwright with serverless Chromium...');
+    try {
+        const executablePath = await chromium.executablePath();
+        
+        browser = await playwright.chromium.launch({
+            executablePath,
+            args: chromium.args,
+            headless: true,
+        });
+
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        });
+
+        const page = await context.newPage();
+        
+        // Block images, css, fonts to speed up loading
+        await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
+
+        console.log(`[Playwright] Navigating to URL: ${url}`);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        // Wait for a moment to let dynamic content load
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const html = await page.content();
+        console.log(`[Playwright] Successfully fetched HTML of length: ${html.length}`);
+        return html;
+
+    } catch (error) {
+        console.error(`[Playwright] Error during scraping: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        throw new Error(`Playwright failed to scrape the page: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+        if (browser) {
+            await browser.close();
+            console.log('[Playwright] Browser closed.');
+        }
+    }
+}
+
+
+async function scrapeArticle(url: string, estonianTitle?: string) {
+  let html = '';
+  
+  // --- STRATEGY 1: Try fast fetch first ---
+  try {
+    console.log(`[Scraper] Attempting fast fetch for: ${url}`);
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Fetch failed with status: ${response.status}`);
+    }
+    html = await response.text();
+    console.log(`[Scraper] Fast fetch successful, HTML length: ${html.length}`);
+
+    // Check if we got a Cloudflare/bot protection page
+    if (html.includes("Verifying you are human") || html.includes("DDoS protection")) {
+        console.log("[Scraper] Bot protection detected. Falling back to Playwright.");
+        html = ''; // Reset html to trigger fallback
+    }
+
+  } catch (error) {
+    console.warn(`[Scraper] Fast fetch failed: ${error instanceof Error ? error.message : 'Unknown error'}. Will try Playwright.`);
+    html = ''; // Ensure fallback is triggered
+  }
+  
+  // --- STRATEGY 2: Fallback to Playwright if fetch failed or returned minimal content ---
+  if (!html || html.length < 500) {
+      console.log(`[Scraper] Fetch result was insufficient (${html.length} chars). Falling back to Playwright...`);
+      try {
+          html = await scrapeWithPlaywright(url);
+      } catch (playwrightError) {
+          throw new Error(`Both fetch and Playwright scraping failed. Error: ${playwrightError instanceof Error ? playwrightError.message : 'Unknown error'}`);
+      }
+  }
+  
+  // --- COMMON PROCESSING LOGIC ---
+  try {
+    const $ = cheerio.load(html);
+    const baseUrl = new URL(url);
+
+    let title = $('h1').first().text().trim() || $('title').text().trim();
+
+    const contentSelectors = [
+        '.article-main', '.entry-content', 'article .entry-content', '.post-content', 
+        '.article-content', '.article-body', 'article', '[role="main"]', '.content', 
+        '.post', '.single-post', '.entry', '#content', '#main-content', 'main article', 'main',
+    ];
+
+    let contentElement = null;
+    let selectedSelector = '';
+
+    for (const selector of contentSelectors) {
+      const element = $(selector);
+      if (element.length) {
+        const text = element.text().trim();
+        const paragraphCount = element.find('p').length;
+        if (text.length > 150 || paragraphCount >= 3) {
+          contentElement = element;
+          selectedSelector = selector;
+          console.log(`[Scraper] ✓ Selected content with selector: ${selector}`);
+          break;
+        }
+      }
+    }
+
+    if (!contentElement || contentElement.length === 0) {
+      console.log('[Scraper] No content found with selectors, falling back to body');
+      contentElement = $('body');
+      selectedSelector = 'body';
+    }
     
-  return content;  
-}  
-  
-async function scrapeArticle(url: string, estonianTitle?: string) {  
-  try {  
-    console.log(`[Scraper] Fetching URL: ${url}`);  
-    const response = await fetch(url, {  
-      headers: {  
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',  
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',  
-        'Accept-Language': 'en-US,en;q=0.9',  
-        'Accept-Encoding': 'gzip, deflate, br',  
-        'Connection': 'keep-alive',  
-        'Upgrade-Insecure-Requests': '1',  
-      },  
-    });  
-  
-    if (!response.ok) {  
-      console.log(`[Scraper] Failed to fetch: ${response.status} ${response.statusText}`);  
-      throw new Error(`Failed to fetch article: ${response.statusText}`);  
-    }  
-  
-    const html = await response.text();  
-    console.log(`[Scraper] HTML received: ${html.length} characters`);  
-    const $ = cheerio.load(html);  
-  
-    const baseUrl = new URL(url);  
-  
-    let title = $('h1').first().text().trim();  
-    if (!title) {  
-      title = $('title').text().trim();  
-    }  
-  
-    // STEP 1: Find content container BEFORE cleanup  
-    const contentSelectors = [  
-      '.article-main',   // phys.org, techxplore.com  
-      '.entry-content',  // WordPress standard (scitechdaily, etc.)  
-      'article .entry-content',  
-      '.post-content',  
-      '.article-content',  
-      '.article-body',  
-      'article',  
-      '[role="main"]',  
-      '.content',  
-      '.post',  
-      '.single-post',  
-      '.entry',  
-      '#content',  
-      '#main-content',  
-      'main article',  
-      'main',  
-    ];  
-  
-    let contentElement = null;  
-    let selectedSelector = '';  
+    contentElement.find(`
+      script, style, nav, header, footer, aside, iframe,
+      .ad, .advertisement, .promo, .promotion,
+      .social-share, .share-buttons, .social-links, .social-follow,
+      .newsletter-signup, .newsletter, .subscription, .subscribe,
+      .cookie-notice, .author-bio,
+      .related-posts, .related-articles, .recommended, .recommendations,
+      .comments, .comment-section,
+      .editorial-note, .editor-note, .fact-check,
+      .copyright, .copyright-notice, .legal-notice,
+      .more-information, .citation, .article-footer,
+      [class*="newsletter"], [class*="subscribe"], [class*="follow-us"],
+      [class*="related"], [class*="recommend"], [class*="copyright"],
+      [class*="editorial"], [class*="editor-"],
+      [id*="newsletter"], [id*="subscribe"], [id*="related"], [id*="copyright"]
+    `.replace(/\s+/g, ' ').trim()).remove();
+
+    const noisePatterns = [
+      /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i,
+      /^\d{1,2}\/\d{1,2}\/\d{2,4}/, /^\d{4}-\d{2}-\d{2}/,
+      /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i,
+      /^(edited by|reviewed by|written by|fact.?checked by)/i,
+      /science x edit(or|orial) process|editorial process|editorial policies/i,
+      /copyright|all rights reserved|©/i,
+      /^(provided by|more information|further information|additional information)/i,
+      /^(citation|reference|doi):/i,
+      /subscribe|newsletter|sign up for|join (our|the)/i,
+      /share (this|the) (article|story|post)/i,
+      /(facebook|twitter|instagram|linkedin|youtube|google|discover|news)\s*(,|\s|and)/i,
+      /click here|learn more|find out|discover more/i,
+      /related (articles|stories|posts|content|news|reading)/i,
+      /you (may|might) (also )?(like|enjoy|want|be interested)/i,
+      /leave a comment|post a comment|comments|no comments/i,
+    ];
+
+    let markdownContent = '';
+    contentElement.find('p, h2, h3, h4, h5, h6, div.paragraph, div[class*="content"], div[class*="text"]').each((_, elem) => {
+      const $elem = $(elem);
+      if ($elem.find('img').length > 0 || $elem.hasClass('caption') || $elem.hasClass('credit') || $elem.hasClass('wp-caption-text')) return;
+      if ($elem.closest('.share, .social, nav, .navigation, .menu, .sidebar, .footer, .header').length > 0) return;
       
-    for (const selector of contentSelectors) {  
-      const element = $(selector);  
-      if (element.length) {  
-        const text = element.text().trim();  
-        const paragraphCount = element.find('p').length;  
-          
-        console.log(`[Scraper] Trying selector: ${selector}, found: ${element.length}, text length: ${text.length}, paragraphs: ${paragraphCount}`);  
-          
-        // Lower threshold and check for paragraph tags  
-        if (text.length > 150 || paragraphCount >= 3) {  
-          contentElement = element;  
-          selectedSelector = selector;  
-          console.log(`[Scraper] ✓ Selected content with selector: ${selector}, length: ${text.length}, paragraphs: ${paragraphCount}`);  
-          break;  
-        }  
-      }  
-    }  
-  
-    if (!contentElement || contentElement.length === 0) {  
-      console.log('[Scraper] No content found with selectors, falling back to body');  
-      contentElement = $('body');  
-      selectedSelector = 'body';  
-    }  
+      if ($elem.is('div')) {
+        const directText = $elem.clone().children().remove().end().text().trim();
+        if (directText.length < 20) return;
+      }
+
+      const links: Array<{text: string; url: string; placeholder: string}> = [];
+      $elem.find('a').each((idx, link) => {
+        const $link = $(link);
+        const linkText = $link.text().trim();
+        let href = $link.attr('href');
+        
+        if (linkText && href) {
+          try {
+            if (href.startsWith('/')) href = `${baseUrl.protocol}//${baseUrl.host}${href}`;
+            else if (href.startsWith('#') || href.startsWith('javascript:')) return;
+            else if (!href.startsWith('http')) href = new URL(href, url).href;
+            
+            const cleanUrl = new URL(href);
+            const paramsToRemove = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'source', 'cc', 'ust', 'usg', 'fbclid', 'gclid', 'ref'];
+            for (const param of paramsToRemove) cleanUrl.searchParams.delete(param);
+            
+            let finalUrl = cleanUrl.toString();
+            if (finalUrl.endsWith('?')) finalUrl = finalUrl.slice(0, -1);
+            
+            const placeholder = `__LINK_${idx}__`;
+            links.push({text: linkText, url: finalUrl, placeholder});
+            $link.replaceWith(placeholder);
+          } catch {}
+        }
+      });
       
-    console.log(`[Scraper] Processing content from: ${selectedSelector}`);  
+      let text = $elem.text();
+      for (const link of links) {
+        text = text.replace(link.placeholder, `[${link.text}](${link.url})`);
+      }
       
-    // STEP 2: Clean unwanted elements from the selected content container only  
-    contentElement.find(`  
-      script, style, nav, header, footer, aside, iframe,  
-      .ad, .advertisement, .promo, .promotion,  
-      .social-share, .share-buttons, .social-links, .social-follow,  
-      .newsletter-signup, .newsletter, .subscription, .subscribe,  
-      .cookie-notice, .author-bio,  
-      .related-posts, .related-articles, .recommended, .recommendations,  
-      .comments, .comment-section,  
-      .editorial-note, .editor-note, .fact-check,  
-      .copyright, .copyright-notice, .legal-notice,  
-      .more-information, .citation, .article-footer,  
-      [class*="newsletter"], [class*="subscribe"], [class*="follow-us"],  
-      [class*="related"], [class*="recommend"], [class*="copyright"],  
-      [class*="editorial"], [class*="editor-"],  
-      [id*="newsletter"], [id*="subscribe"], [id*="related"], [id*="copyright"]  
-    `.replace(/\s+/g, ' ').trim()).remove();  
-  
-    const noisePatterns = [  
-      // Dates and metadata  
-      /^(published|updated|posted|by|author|share|tweet|email|print|read more|continue reading)/i,  
-      /^\d{1,2}\/\d{1,2}\/\d{2,4}/,  
-      /^\d{4}-\d{2}-\d{2}/,  
-      /^(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i,  
-        
-      // Editorial metadata  
-      /^(edited by|reviewed by|written by|fact.?checked by)/i,  
-      /science x edit(or|orial) process|editorial process|editorial policies/i,  
-      /the (article|story|content) has been reviewed/i,  
-      /editors have highlighted the following/i,  
-        
-      // Copyright notices  
-      /copyright|all rights reserved|©/i,  
-      /this document is (subject to )?copyright/i,  
-      /no part may be reproduced/i,  
-      /without written permission/i,  
-      /provided for (informational|information) purposes/i,  
-      /fair (dealing|use)/i,  
-        
-      // "Provided by" / "More information"  
-      /^(provided by|more information|further information|additional information)/i,  
-      /^(citation|reference|doi):/i,  
-        
-      // Newsletter and subscription prompts  
-      /subscribe|newsletter|sign up for|join (our|the)/i,  
-      /(don't|don't|never) miss/i,  
-      /follow us (on|at|in)/i,  
-      /like us on/i,  
-      /get (the latest|updates|our)/i,  
-      /stay (updated|connected|informed)/i,  
-        
-      // Social media and sharing  
-      /share (this|the) (article|story|post)/i,  
-      /(facebook|twitter|instagram|linkedin|youtube|google|discover|news)\s*(,|\s|and)/i,  
-      /follow.*?(facebook|twitter|instagram|linkedin|youtube)/i,  
-        
-      // Call to action  
-      /click here|learn more|find out|discover more/i,  
-      /related (articles|stories|posts|content|news|reading)/i,  
-      /you (may|might) (also )?(like|enjoy|want|be interested)/i,  
-      /recommended for you|recommended stories/i,  
-      /explore more|read more about|see also|see more/i,  
-      /trending|popular (articles|stories|posts)/i,  
-      /latest (articles|stories|posts|news)/i,  
-        
-      // Comments and engagement  
-      /leave a comment|post a comment|comments|no comments/i,  
-    ];  
-  
-    let markdownContent = '';  
-    let processedElements = 0;  
-    let skippedElements = 0;  
-      
-    // Also try to find div elements that might contain article paragraphs  
-    contentElement.find('p, h2, h3, h4, h5, h6, div.paragraph, div[class*="content"], div[class*="text"]').each((_, elem) => {  
-      processedElements++;  
-      const $elem = $(elem);  
-        
-      // Skip image captions, credits, and elements with only images  
-      if ($elem.find('img').length > 0 || $elem.hasClass('caption') || $elem.hasClass('credit') || $elem.hasClass('wp-caption-text')) {  
-        skippedElements++;  
-        return;  
-      }  
-        
-      // Skip social sharing buttons and navigation  
-      if ($elem.closest('.share, .social, nav, .navigation, .menu, .sidebar, .footer, .header').length > 0) {  
-        skippedElements++;  
-        return;  
-      }  
-        
-      // For div elements, only process if they contain meaningful text (not just nested tags)  
-      if ($elem.is('div')) {  
-        const directText = $elem.clone().children().remove().end().text().trim();  
-        if (directText.length < 20) {  
-          skippedElements++;  
-          return; // Skip divs that don't have direct text content  
-        }  
-      }  
-  
-      // Extract all links first and replace them with markdown placeholders  
-      const links: Array<{text: string; url: string; placeholder: string}> = [];  
-      $elem.find('a').each((idx, link) => {  
-        const $link = $(link);  
-        const linkText = $link.text().trim();  
-        let href = $link.attr('href');  
-          
-        if (linkText && href) {  
-          try {  
-            // Convert relative URLs to absolute  
-            if (href.startsWith('/')) {  
-              href = `${baseUrl.protocol}//${baseUrl.host}${href}`;  
-            } else if (href.startsWith('#') || href.startsWith('javascript:')) {  
-              return; // Skip anchor and javascript links  
-            } else if (!href.startsWith('http')) {  
-              href = new URL(href, url).href;  
-            }  
-              
-            // Clean tracking parameters  
-            const cleanUrl = new URL(href);  
-            const paramsToRemove = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'source', 'cc', 'ust', 'usg', 'fbclid', 'gclid', 'ref'];  
-              
-            for (const param of paramsToRemove) {  
-              cleanUrl.searchParams.delete(param);  
-            }  
-              
-            let finalUrl = cleanUrl.toString();  
-            if (finalUrl.endsWith('?')) {  
-              finalUrl = finalUrl.slice(0, -1);  
-            }  
-              
-            const placeholder = `__LINK_${idx}__`;  
-            links.push({text: linkText, url: finalUrl, placeholder});  
-              
-            // Replace link with placeholder in the element  
-            $link.replaceWith(placeholder);  
-          } catch {  
-            // If URL processing fails, just keep the text  
-          }  
-        }  
-      });  
-        
-      // Now get all text with placeholders  
-      let text = $elem.text();  
-        
-      // Replace placeholders with markdown links  
-      for (const link of links) {  
-        text = text.replace(link.placeholder, `[${link.text}](${link.url})`);  
-      }  
-        
-      const trimmed = text.trim();  
-      if (trimmed && trimmed.length > 20) {  
-        const isNoise = noisePatterns.some(pattern => pattern.test(trimmed));  
-        if (!isNoise) {  
-          markdownContent += `${trimmed}\n\n`;  
-        } else {  
-          skippedElements++;  
-        }  
-      } else {  
-        skippedElements++;  
-      }  
-    });  
-      
-    console.log(`[Scraper] Processed ${processedElements} elements, skipped ${skippedElements}, extracted ${markdownContent.length} characters`);  
-  
-    // Fallback: try to get all text if structured extraction failed  
-    if (!markdownContent || markdownContent.length < 100) {  
-      const fallbackText = contentElement.text().replace(/\s+/g, ' ').trim();  
-      if (fallbackText.length >= 100) {  
-        markdownContent = fallbackText;  
-      }  
-    }  
-      
-    // Last resort: try body if still no content  
-    if (!markdownContent || markdownContent.length < 100) {  
-      const bodyText = $('body').text().replace(/\s+/g, ' ').trim();  
-      if (bodyText.length >= 200) {  
-        markdownContent = bodyText;  
-      }  
-    }  
-  
-    // CRITICAL: Remove related articles lists at the end  
-    // These typically appear as 10-30+ short sentences that look like article headlines  
-    markdownContent = removeRelatedArticlesList(markdownContent);  
-    console.log(`[Scraper] After related articles removal: ${markdownContent.length} characters`);  
-  
-    if (!markdownContent || markdownContent.length < 100) {  
-      throw new Error(`Could not extract sufficient content from the article. Extracted ${markdownContent?.length || 0} characters. The page structure may not be supported.`);  
-    }  
-  
-    return {  
-      title,  
-      content: markdownContent.substring(0, 50000),  
-      url,  
-      estonianTitle,  
-    };  
-  } catch (error) {  
-    throw new Error(`Failed to scrape article: ${error instanceof Error ? error.message : 'Unknown error'}`);  
-  }  
-}  
-  
-async function translateWithGemini(  
-  articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>,  
-  apiKey: string,  
-  gemPrompt?: string,  
-  customPrompt?: string,  
-  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }> = []  
-) {  
-  const ai = new GoogleGenAI({ apiKey });  
-  
+      const trimmed = text.trim();
+      if (trimmed && trimmed.length > 20) {
+        const isNoise = noisePatterns.some(pattern => pattern.test(trimmed));
+        if (!isNoise) {
+          markdownContent += `${trimmed}\n\n`;
+        }
+      }
+    });
+
+    if (!markdownContent || markdownContent.length < 100) {
+      const fallbackText = contentElement.text().replace(/\s+/g, ' ').trim();
+      if (fallbackText.length >= 100) markdownContent = fallbackText;
+    }
+    
+    markdownContent = removeRelatedArticlesList(markdownContent);
+    
+    if (!markdownContent || markdownContent.length < 100) {
+      throw new Error(`Could not extract sufficient content. The page structure may not be supported.`);
+    }
+
+    return {
+      title,
+      content: markdownContent.substring(0, 50000),
+      url,
+      estonianTitle,
+    };
+  } catch (error) {
+    throw new Error(`Failed to parse article content: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+async function translateWithGemini(
+  articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>,
+  apiKey: string,
+  gemPrompt?: string,
+  customPrompt?: string,
+  conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }> = []
+) {
+  const genAI = new GoogleGenAI(apiKey);
+ 
   const defaultSystemPrompt = `You are a specialized translator for converting scientific articles from English into Estonian. You make no mistakes. You think hard and understand your instructions on the level of PhD philologist in both languages, English and Estonian.  
   
 Always write in natural Estonian, ensuring correct grammar, cases, syntax, and semantics, while preserving full accuracy and nuance. Keep the translation length close to the original.  
@@ -466,12 +408,12 @@ The final translation must be PUBLICATION-READY with:
 - STRICT third person perspective throughout (no quotations, no direct speech)  
 - Proper Estonian grammar  
 - All hyperlinks embedded in Estonian text  
-- Indirect speech for all citations and statements`;  
-  
-  const systemPrompt = gemPrompt || defaultSystemPrompt;  
-  
-  const additionalInstructions = customPrompt ? `\n\nAdditional instructions: ${customPrompt}` : '';  
-  
+- Indirect speech for all citations and statements`;
+ 
+  const systemPrompt = gemPrompt || defaultSystemPrompt;
+ 
+  const additionalInstructions = customPrompt ? `\n\nAdditional instructions: ${customPrompt}` : '';
+ 
   const guidancePrompt = `  
 If you need clarification about terminology, context, or specific translation choices, you should ask the user for guidance.  
   
@@ -486,28 +428,28 @@ TRANSLATION_COMPLETE
 CRITICAL:   
 - DO NOT include the article title in your translation (title will be added separately)  
 - Translate ONLY the article body/content  
-- Separate each article translation with three dashes (---) on their own line`;  
-  
-  let contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];  
-  
-  if (conversationHistory.length === 0) {  
-    const articlesText = articles.map((article, idx) => {  
-      let articleHeader = `\n\n--- ARTICLE ${idx + 1} ---\nURL: ${article.url}\n`;  
-        
-      if (article.estonianTitle) {  
-        articleHeader += `Estonian Title (USE THIS, DO NOT TRANSLATE): ${article.estonianTitle}\n`;  
-        articleHeader += `English Title (for reference only): ${article.title}\n`;  
-      } else {  
-        articleHeader += `Title: ${article.title}\n`;  
-      }  
-        
-      return `${articleHeader}\nContent: ${article.content}`;  
-    }).join('\n');  
-  
-    contents = [  
-      {  
-        role: 'user',  
-        parts: [{  
+- Separate each article translation with three dashes (---) on their own line`;
+ 
+  let contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+ 
+  if (conversationHistory.length === 0) {
+    const articlesText = articles.map((article, idx) => {
+      let articleHeader = `\n\n--- ARTICLE ${idx + 1} ---\nURL: ${article.url}\n`;
+      
+      if (article.estonianTitle) {
+        articleHeader += `Estonian Title (USE THIS, DO NOT TRANSLATE): ${article.estonianTitle}\n`;
+        articleHeader += `English Title (for reference only): ${article.title}\n`;
+      } else {
+        articleHeader += `Title: ${article.title}\n`;
+      }
+      
+      return `${articleHeader}\nContent: ${article.content}`;
+    }).join('\n');
+
+    contents = [
+      {
+        role: 'user',
+        parts: [{
           text: `${systemPrompt}${additionalInstructions}${guidancePrompt}\n\nPlease translate the following ${articles.length} scientific article${articles.length > 1 ? 's' : ''} from English to Estonian:${articlesText}\n\nCRITICAL REMINDERS:  
 1. 🔗🔗🔗 HYPERLINKS ARE MANDATORY - Preserve EVERY [text](url) link from the source! This is the #1 priority!  
 2. DO NOT include the title in your translation - translate ONLY the article body/content  
@@ -529,313 +471,306 @@ CRITICAL:
 - Did you translate the anchor text but keep URLs unchanged?  
 If you answer NO to any of these, DO NOT submit - fix the links first!  
   
-Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`  
-        }]  
-      }  
-    ];  
-  } else {  
-    contents = conversationHistory;  
-  }  
-  
-  const response = await ai.models.generateContent({  
-    model: 'gemini-2.5-pro',  
-    contents,  
-  });  
-  
-  const responseText = response.text || '';  
+Provide complete, professional Estonian translations for all articles (body text only, NO titles). If you need any clarification, ask me before proceeding.`
+        }]
+      }
+    ];
+  } else {
+    contents = conversationHistory;
+  }
+ 
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro-latest' });
+
+    const result = await model.startChat({
+        history: conversationHistory,
+    }).sendMessage(contents[contents.length-1].parts[0].text);
     
-  console.log(`[Gemini] Response length: ${responseText.length} characters`);  
-  console.log(`[Gemini] Response starts with: ${responseText.substring(0, 200)}`);  
-  console.log(`[Gemini] Response ends with: ${responseText.substring(responseText.length - 200)}`);  
-  console.log(`[Gemini] Contains TRANSLATION_COMPLETE: ${responseText.includes('TRANSLATION_COMPLETE')}`);  
-  
-  if (responseText.includes('TRANSLATION_COMPLETE')) {  
-    const translation = responseText.split('TRANSLATION_COMPLETE')[1].trim();  
-    console.log(`[Gemini] Translation length: ${translation.length} characters`);  
-    console.log(`[Gemini] Number of --- separators: ${(translation.match(/---/g) || []).length}`);  
-      
-    // Count hyperlinks in source and translation  
-    const sourceLinksCount = articles.reduce((count, article) => {  
-      return count + (article.content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;  
-    }, 0);  
-    const translationLinksCount = (translation.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;  
-      
-    console.log(`[Gemini] 🔗 Hyperlinks in source: ${sourceLinksCount}`);  
-    console.log(`[Gemini] 🔗 Hyperlinks in translation: ${translationLinksCount}`);  
-      
-    if (translationLinksCount < sourceLinksCount) {  
-      console.warn(`[Gemini] ⚠️ WARNING: Translation is missing ${sourceLinksCount - translationLinksCount} hyperlinks!`);  
-    } else if (translationLinksCount === sourceLinksCount) {  
-      console.log(`[Gemini] ✅ All hyperlinks preserved correctly!`);  
-    }  
-      
-    return { complete: true, translation };  
-  }  
-  
-  return { complete: false, question: responseText, conversationHistory: contents };  
-}  
-  
-function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {  
-  const elements: Array<TextRun | ExternalHyperlink> = [];  
-  // More robust regex that handles URLs with parentheses, special characters, etc.  
-  // This regex properly captures URLs by looking for the closing ) that matches the opening (  
-  const linkRegex = /\[([^\]]+)\]\(((?:[^()]+|\([^)]*\))*)\)/g;  
+    const responseText = result.response.text();
     
-  let lastIndex = 0;  
-  let match = linkRegex.exec(text);  
+  console.log(`[Gemini] Response length: ${responseText.length} characters`);
+  console.log(`[Gemini] Response starts with: ${responseText.substring(0, 200)}`);
+  console.log(`[Gemini] Response ends with: ${responseText.substring(responseText.length - 200)}`);
+  console.log(`[Gemini] Contains TRANSLATION_COMPLETE: ${responseText.includes('TRANSLATION_COMPLETE')}`);
+
+  if (responseText.includes('TRANSLATION_COMPLETE')) {
+    const translation = responseText.split('TRANSLATION_COMPLETE')[1].trim();
+    console.log(`[Gemini] Translation length: ${translation.length} characters`);
+    console.log(`[Gemini] Number of --- separators: ${(translation.match(/---/g) || []).length}`);
     
-  while (match !== null) {  
-    // Add text before the link  
-    if (match.index > lastIndex) {  
-      elements.push(  
-        new TextRun({  
-          text: text.substring(lastIndex, match.index),  
-        })  
-      );  
-    }  
-      
-    // Clean and validate the URL  
-    let url = match[2].trim();  
-      
-    // Remove any trailing punctuation that might have been captured  
-    url = url.replace(/[.,;!?]+$/, '');  
-      
-    // Only create hyperlink if URL looks valid  
-    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('www.')) {  
-      elements.push(  
-        new ExternalHyperlink({  
-          children: [  
-            new TextRun({  
-              text: match[1],  
-              style: 'Hyperlink',  
-              color: '0563C1',  
-              underline: {  
-                type: 'single',  
-              },  
-            }),  
-          ],  
-          link: url,  
-        })  
-      );  
-    } else {  
-      // If URL doesn't look valid, just output as plain text  
-      elements.push(  
-        new TextRun({  
-          text: `[${match[1]}](${url})`,  
-        })  
-      );  
-    }  
-      
-    lastIndex = match.index + match[0].length;  
-    match = linkRegex.exec(text);  
-  }  
+    // Count hyperlinks in source and translation
+    const sourceLinksCount = articles.reduce((count, article) => {
+      return count + (article.content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
+    }, 0);
+    const translationLinksCount = (translation.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []).length;
     
-  // Add remaining text after the last link  
-  if (lastIndex < text.length) {  
-    elements.push(  
-      new TextRun({  
-        text: text.substring(lastIndex),  
-      })  
-    );  
-  }  
+    console.log(`[Gemini] 🔗 Hyperlinks in source: ${sourceLinksCount}`);
+    console.log(`[Gemini] 🔗 Hyperlinks in translation: ${translationLinksCount}`);
     
-  return elements;  
-}  
+    if (translationLinksCount < sourceLinksCount) {
+      console.warn(`[Gemini] ⚠️ WARNING: Translation is missing ${sourceLinksCount - translationLinksCount} hyperlinks!`);
+    } else if (translationLinksCount === sourceLinksCount) {
+      console.log(`[Gemini] ✅ All hyperlinks preserved correctly!`);
+    }
+    
+    return { complete: true, translation };
+  }
+
+  return { complete: false, question: responseText, conversationHistory: contents };
+}
+
+function parseMarkdownLinks(text: string): Array<TextRun | ExternalHyperlink> {
+  const elements: Array<TextRun | ExternalHyperlink> = [];
+  const linkRegex = /\[([^\]]+)\]\(((?:[^()]+|\([^)]*\))*)\)/g;
   
-function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {  
-  const children: Paragraph[] = [];  
+  let lastIndex = 0;
+  let match = linkRegex.exec(text);
   
-  const translationSections = translation.split(/---+/).map(s => s.trim()).filter(s => s.length > 0);  
+  while (match !== null) {
+    if (match.index > lastIndex) {
+      elements.push(
+        new TextRun({
+          text: text.substring(lastIndex, match.index),
+        })
+      );
+    }
+    
+    let url = match[2].trim();
+    
+    url = url.replace(/[.,;!?]+$/, '');
+    
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('www.')) {
+      elements.push(
+        new ExternalHyperlink({
+          children: [
+            new TextRun({
+              text: match[1],
+              style: 'Hyperlink',
+              color: '0563C1',
+              underline: {
+                type: 'single',
+              },
+            }),
+          ],
+          link: url,
+        })
+      );
+    } else {
+      elements.push(
+        new TextRun({
+          text: `[${match[1]}](${url})`,
+        })
+      );
+    }
+    
+    lastIndex = match.index + match[0].length;
+    match = linkRegex.exec(text);
+  }
   
-  articles.forEach((article, idx) => {  
-    const displayTitle = article.estonianTitle || article.title;  
-      
-    children.push(  
-      new Paragraph({  
-        children: [  
-          new TextRun({  
-            text: displayTitle,  
-            bold: true,  
-            size: 24,  
-          }),  
-        ],  
-        spacing: { after: 200 },  
-      }),  
-      new Paragraph({  
-        children: [  
-          new ExternalHyperlink({  
-            children: [  
-              new TextRun({  
-                text: article.url,  
-                style: 'Hyperlink',  
-                color: '0563C1',  
-                underline: {  
-                  type: 'single',  
-                },  
-              }),  
-            ],  
-            link: article.url,  
-          }),  
-        ],  
-        spacing: { after: 200 },  
-      }),  
-      new Paragraph({  
-        text: '',  
-        spacing: { after: 200 },  
-      })  
-    );  
+  if (lastIndex < text.length) {
+    elements.push(
+      new TextRun({
+        text: text.substring(lastIndex),
+      })
+    );
+  }
   
-    const articleTranslation = translationSections[idx] || '';  
-      
-    for (const para of articleTranslation.split('\n\n')) {  
-      if (para.trim()) {  
-        const paraElements = parseMarkdownLinks(para.trim());  
-          
-        children.push(  
-          new Paragraph({  
-            children: paraElements,  
-            spacing: { after: 200 },  
-          }),  
-          new Paragraph({  
-            text: '',  
-            spacing: { after: 200 },  
-          })  
-        );  
-      }  
-    }  
-  
-    if (idx < articles.length - 1) {  
-      children.push(  
-        new Paragraph({  
-          text: '',  
-          spacing: { after: 200 },  
-        }),  
-        new Paragraph({  
-          text: '---',  
-          spacing: { after: 200 },  
-        }),  
-        new Paragraph({  
-          text: '',  
-          spacing: { after: 200 },  
-        })  
-      );  
-    }  
-  });  
-  
-  const doc = new Document({  
-    sections: [{  
-      properties: {},  
-      children,  
-    }],  
-  });  
-  
-  return Packer.toBuffer(doc);  
-}  
-  
-export async function POST(request: NextRequest) {  
-  try {  
-    const body = await request.json();  
-    const { articleEntries, apiKey, gemPrompt, customPrompt, translationId, userInput } = body;  
-  
-    if (!apiKey) {  
-      return NextResponse.json({ error: 'API key is required' }, { status: 400 });  
-    }  
-  
-    if (translationId && userInput) {  
-      const session = activeSessions.get(translationId);  
-      if (!session) {  
-        return NextResponse.json({ error: 'Session not found' }, { status: 404 });  
-      }  
-  
-      session.conversationHistory.push({  
-        role: 'model',  
-        parts: [{ text: session.conversationHistory[session.conversationHistory.length - 1]?.parts[0]?.text || '' }]  
-      });  
-      session.conversationHistory.push({  
-        role: 'user',  
-        parts: [{ text: userInput }]  
-      });  
-  
-      const result = await translateWithGemini(  
-        session.articles,  
-        session.apiKey,  
-        session.gemPrompt,  
-        session.customPrompt,  
-        session.conversationHistory  
-      );  
-  
-      if (result.complete && result.translation) {  
-        const docxBuffer = await generateDocx(  
-          session.articles,  
-          result.translation  
-        );  
-  
-        activeSessions.delete(translationId);  
-  
-        return NextResponse.json({  
-          complete: true,  
-          docx: Buffer.from(docxBuffer).toString('base64'),  
-        });  
-      }  
-  
-      session.conversationHistory = result.conversationHistory || session.conversationHistory;  
-  
-      return NextResponse.json({  
-        needsInput: true,  
-        question: result.question,  
-        translationId,  
-        progress: 60,  
-      });  
-    }  
-  
-    if (!articleEntries || articleEntries.length === 0) {  
-      return NextResponse.json({ error: 'At least one article is required' }, { status: 400 });  
-    }  
-  
-    const articles = [];  
-    for (const entry of articleEntries) {  
-      try {  
-        const article = await scrapeArticle(entry.url, entry.estonianTitle);  
-        articles.push(article);  
-      } catch (error) {  
-        console.error(`Failed to scrape ${entry.url}:`, error);  
-        return NextResponse.json(  
-          { error: `Failed to scrape article from ${entry.url}: ${error instanceof Error ? error.message : 'Unknown error'}` },  
-          { status: 500 }  
-        );  
-      }  
-    }  
-  
-    const result = await translateWithGemini(articles, apiKey, gemPrompt, customPrompt);  
-  
-    if (result.complete && result.translation) {  
-      const docxBuffer = await generateDocx(articles, result.translation);  
-  
-      return NextResponse.json({  
-        complete: true,  
-        docx: Buffer.from(docxBuffer).toString('base64'),  
-      });  
-    }  
-  
-    const sessionId = `trans_${Date.now()}_${Math.random().toString(36).substring(7)}`;  
-    activeSessions.set(sessionId, {  
-      articles,  
-      conversationHistory: result.conversationHistory || [],  
-      apiKey,  
-      gemPrompt,  
-      customPrompt,  
-    });  
-  
-    return NextResponse.json({  
-      needsInput: true,  
-      question: result.question,  
-      translationId: sessionId,  
-    });  
-  } catch (error) {  
-    console.error('Translation error:', error);  
-    return NextResponse.json(  
-      { error: error instanceof Error ? error.message : 'An unexpected error occurred' },  
-      { status: 500 }  
-    );  
-  }  
-}  
+  return elements;
+}
+
+function generateDocx(articles: Array<{ title: string; url: string; estonianTitle?: string }>, translation: string) {
+  const children: Paragraph[] = [];
+
+  const translationSections = translation.split(/---+/).map(s => s.trim()).filter(s => s.length > 0);
+
+  articles.forEach((article, idx) => {
+    const displayTitle = article.estonianTitle || article.title;
+    
+    children.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: displayTitle,
+            bold: true,
+            size: 24,
+          }),
+        ],
+        spacing: { after: 200 },
+      }),
+      new Paragraph({
+        children: [
+          new ExternalHyperlink({
+            children: [
+              new TextRun({
+                text: article.url,
+                style: 'Hyperlink',
+                color: '0563C1',
+                underline: {
+                  type: 'single',
+                },
+              }),
+            ],
+            link: article.url,
+          }),
+        ],
+        spacing: { after: 200 },
+      }),
+      new Paragraph({
+        text: '',
+        spacing: { after: 200 },
+      })
+    );
+
+    const articleTranslation = translationSections[idx] || '';
+    
+    for (const para of articleTranslation.split('\n\n')) {
+      if (para.trim()) {
+        const paraElements = parseMarkdownLinks(para.trim());
+        
+        children.push(
+          new Paragraph({
+            children: paraElements,
+            spacing: { after: 200 },
+          }),
+          new Paragraph({
+            text: '',
+            spacing: { after: 200 },
+          })
+        );
+      }
+    }
+
+    if (idx < articles.length - 1) {
+      children.push(
+        new Paragraph({
+          text: '',
+          spacing: { after: 200 },
+        }),
+        new Paragraph({
+          text: '---',
+          spacing: { after: 200 },
+        }),
+        new Paragraph({
+          text: '',
+          spacing: { after: 200 },
+        })
+      );
+    }
+  });
+
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children,
+    }],
+  });
+
+  return Packer.toBuffer(doc);
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { articleEntries, apiKey, gemPrompt, customPrompt, translationId, userInput } = body;
+
+    if (!apiKey) {
+      return NextResponse.json({ error: 'API key is required' }, { status: 400 });
+    }
+
+    if (translationId && userInput) {
+      const session = activeSessions.get(translationId);
+      if (!session) {
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+      }
+
+      session.conversationHistory.push({
+        role: 'model',
+        parts: [{ text: session.conversationHistory[session.conversationHistory.length - 1]?.parts[0]?.text || '' }]
+      });
+      session.conversationHistory.push({
+        role: 'user',
+        parts: [{ text: userInput }]
+      });
+
+      const result = await translateWithGemini(
+        session.articles,
+        session.apiKey,
+        session.gemPrompt,
+        session.customPrompt,
+        session.conversationHistory
+      );
+
+      if (result.complete && result.translation) {
+        const docxBuffer = await generateDocx(
+          session.articles,
+          result.translation
+        );
+
+        activeSessions.delete(translationId);
+
+        return NextResponse.json({
+          complete: true,
+          docx: Buffer.from(docxBuffer).toString('base64'),
+        });
+      }
+
+      session.conversationHistory = result.conversationHistory || session.conversationHistory;
+
+      return NextResponse.json({
+        needsInput: true,
+        question: result.question,
+        translationId,
+        progress: 60,
+      });
+    }
+
+    if (!articleEntries || articleEntries.length === 0) {
+      return NextResponse.json({ error: 'At least one article is required' }, { status: 400 });
+    }
+
+    const articles = [];
+    for (const entry of articleEntries) {
+      try {
+        const article = await scrapeArticle(entry.url, entry.estonianTitle);
+        articles.push(article);
+      } catch (error) {
+        console.error(`Failed to scrape ${entry.url}:`, error);
+        return NextResponse.json(
+          { error: `Failed to scrape article from ${entry.url}: ${error instanceof Error ? error.message : 'Unknown error'}` },
+          { status: 500 }
+        );
+      }
+    }
+
+    const result = await translateWithGemini(articles, apiKey, gemPrompt, customPrompt);
+
+    if (result.complete && result.translation) {
+      const docxBuffer = await generateDocx(articles, result.translation);
+
+      return NextResponse.json({
+        complete: true,
+        docx: Buffer.from(docxBuffer).toString('base64'),
+      });
+    }
+
+    const sessionId = `trans_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    activeSessions.set(sessionId, {
+      articles,
+      conversationHistory: result.conversationHistory || [],
+      apiKey,
+      gemPrompt,
+      customPrompt,
+    });
+
+    return NextResponse.json({
+      needsInput: true,
+      question: result.question,
+      translationId: sessionId,
+    });
+  } catch (error) {
+    console.error('Translation error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'An unexpected error occurred' },
+      { status: 500 }
+    );
+  }
+}
