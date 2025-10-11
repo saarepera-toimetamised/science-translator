@@ -5,6 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as cheerio from 'cheerio';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } from 'docx';
 
+// Globaalne sessioonide hoidla jääb samaks
 const activeSessions = new Map<string, {
   articles: Array<{ title: string; content: string; url: string; estonianTitle?: string }>;
   conversationHistory: Array<{ role: string; parts: Array<{ text: string }> }>;
