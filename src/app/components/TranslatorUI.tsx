@@ -1,3 +1,5 @@
+// KOPEERI KOGU SEE KOOD JA ASENDA OMA TranslatorUI.tsx FAILI SISUGA
+
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -20,7 +22,7 @@ export default function TranslatorUI() {
   const [statusMessage, setStatusMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [userInput, setUserInput] = useState('');
-  const [translationId, setTranslationId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [showGemPrompt, setShowGemPrompt] = useState(false);
 
   useEffect(() => {
@@ -71,54 +73,102 @@ export default function TranslatorUI() {
     
     if (articleEntries.length === 0 || !apiKey) {
       setStatus('error');
-      setStatusMessage('Please provide at least one article and your API key');
+      setStatusMessage('Please provide at least one article URL and your API key');
       return;
     }
 
     setStatus('fetching');
     setProgress(10);
-    setStatusMessage(`Fetching ${articleEntries.length} article${articleEntries.length > 1 ? 's' : ''}...`);
+    setStatusMessage(`Scraping ${articleEntries.length} article${articleEntries.length > 1 ? 's' : ''}...`);
     setMessages([]);
 
     try {
-      const response = await fetch('/api/translate', {
+      // --- PARANDUS ALGAB SIIT ---
+      // Eraldame URL-id ja pealkirjad eraldi massiivideks, nagu backend ootab
+      const urlsToScrape = articleEntries.map(entry => entry.url);
+      const estonianTitles = articleEntries.map(entry => entry.estonianTitle || null);
+
+      const scrapeResponse = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          articleEntries, 
+          action: 'scrape', // Lisasime puuduva 'action' välja
+          urls: urlsToScrape,
+          estonianTitles, 
           apiKey, 
           gemPrompt,
           customPrompt 
         }),
       });
 
-      const data = await response.json();
+      const scrapeData = await scrapeResponse.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Translation failed');
+      if (!scrapeResponse.ok) {
+        const errorMessage = scrapeData.details ? `${scrapeData.error}: ${JSON.stringify(scrapeData.details)}` : scrapeData.error;
+        throw new Error(errorMessage || 'Scraping failed');
+      }
+      
+      // Kui kraapimine õnnestus (või loodi fallback ülesanne), alustame kohe tõlkimist
+      const currentSessionId = scrapeData.sessionId;
+      setSessionId(currentSessionId);
+      setStatus('translating');
+      setProgress(50);
+      setStatusMessage('Articles processed, starting translation with Gemini...');
+
+      const translateResponse = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+              action: 'translate',
+              sessionId: currentSessionId,
+              apiKey,
+          }),
+      });
+
+      const translateData = await translateResponse.json();
+
+      if (!translateResponse.ok) {
+          throw new Error(translateData.error || 'Translation request failed');
       }
 
-      if (data.needsInput) {
+      if (translateData.question) {
         setStatus('awaiting_input');
-        setTranslationId(data.translationId);
-        setMessages([{ type: 'assistant', content: data.question, id: `msg-${Date.now()}` }]);
-        setProgress(50);
+        setMessages([{ type: 'assistant', content: translateData.question, id: `msg-${Date.now()}` }]);
+        setProgress(75);
         setStatusMessage('Waiting for your input...');
-      } else if (data.complete) {
-        setStatus('complete');
-        setProgress(100);
-        setStatusMessage('Translation complete!');
-        
-        const blob = new Blob([Buffer.from(data.docx, 'base64')], {
-          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      } else if (translateData.translation) {
+        // Kui tõlge on valmis, käivitame allalaadimise
+        const downloadResponse = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'download',
+                sessionId: currentSessionId,
+                translation: translateData.translation,
+            })
         });
+
+        if(!downloadResponse.ok) {
+            const errorData = await downloadResponse.json();
+            throw new Error(errorData.error || 'Download failed');
+        }
+        
+        const blob = await downloadResponse.blob();
         const downloadUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = downloadUrl;
         a.download = `translation_${Date.now()}.docx`;
+        document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(downloadUrl);
+        document.body.removeChild(a);
+
+        setStatus('complete');
+        setProgress(100);
+        setStatusMessage('Translation complete and file downloaded!');
       }
+      // --- PARANDUS LÕPPEB SIIN ---
+
     } catch (error) {
       setStatus('error');
       setStatusMessage(error instanceof Error ? error.message : 'An error occurred');
@@ -126,7 +176,7 @@ export default function TranslatorUI() {
   };
 
   const handleUserResponse = async () => {
-    if (!userInput.trim() || !translationId) return;
+    if (!userInput.trim() || !sessionId) return;
 
     setMessages([...messages, { type: 'user', content: userInput, id: `msg-${Date.now()}` }]);
     setStatus('translating');
@@ -137,11 +187,14 @@ export default function TranslatorUI() {
       const response = await fetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // --- PARANDUS ALGAB SIIT ---
         body: JSON.stringify({
-          translationId,
-          userInput,
+          action: 'answer', // Lisasime puuduva 'action' välja
+          sessionId,
+          answer: userInput, // Muudetud userInput -> answer, et vastata backendile
           apiKey,
         }),
+        // --- PARANDUS LÕPPEB SIIN ---
       });
 
       const data = await response.json();
@@ -150,25 +203,41 @@ export default function TranslatorUI() {
         throw new Error(data.error || 'Translation failed');
       }
 
-      if (data.needsInput) {
+      if (data.question) {
         setStatus('awaiting_input');
         setMessages(prev => [...prev, { type: 'assistant', content: data.question, id: `msg-${Date.now()}` }]);
-        setProgress(data.progress || 60);
+        setProgress(prev => Math.min(90, prev + 10));
         setStatusMessage('Waiting for your input...');
-      } else if (data.complete) {
-        setStatus('complete');
-        setProgress(100);
-        setStatusMessage('Translation complete!');
-        
-        const blob = new Blob([Buffer.from(data.docx, 'base64')], {
-          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      } else if (data.translation) {
+        // Kordame allalaadimise loogikat
+        const downloadResponse = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'download',
+                sessionId: sessionId,
+                translation: data.translation,
+            })
         });
+
+        if(!downloadResponse.ok) {
+            const errorData = await downloadResponse.json();
+            throw new Error(errorData.error || 'Download failed');
+        }
+        
+        const blob = await downloadResponse.blob();
         const downloadUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = downloadUrl;
         a.download = `translation_${Date.now()}.docx`;
+        document.body.appendChild(a);
         a.click();
         window.URL.revokeObjectURL(downloadUrl);
+        document.body.removeChild(a);
+
+        setStatus('complete');
+        setProgress(100);
+        setStatusMessage('Translation complete and file downloaded!');
       }
     } catch (error) {
       setStatus('error');
@@ -176,6 +245,7 @@ export default function TranslatorUI() {
     }
   };
 
+  // Ülejäänud JSX kood jääb samaks
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', padding: '40px 20px', fontFamily: 'system-ui, sans-serif' }}>
       <div style={{ textAlign: 'center', marginBottom: '40px' }}>
